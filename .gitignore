@@ -5,3 +5,6 @@ f110_description
 .vscode
 __pycache__
 *.pyc
+.pth
+.pt
+outputs

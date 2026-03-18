@@ -2,10 +2,13 @@
 Convert car values
 """
 
-import numpy as np
-import genesis as gs
+import os
 
-URDF_PATH = "F110.export.urdf"
+import numpy as np
+
+URDF_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "F110.export.urdf")
+)
 
 # Your joints
 WHEEL_JOINTS = [
@@ -85,8 +88,8 @@ def wheel_omegas_from_v(
     )
 
 
-def setup_entity_controls(car) -> None:
-    # Map joint names -> local dof indices (Genesis convention) :contentReference[oaicite:2]{index=2}
+def setup_entity_controls(car) -> tuple[list[int], list[int]]:
+    # Map joint names -> local dof indices (Genesis convention)
     wheel_dofs = [car.get_joint(n).dof_idx_local for n in WHEEL_JOINTS]
     steer_dofs = [car.get_joint(n).dof_idx_local for n in STEER_JOINTS]
 
@@ -98,3 +101,5 @@ def setup_entity_controls(car) -> None:
     car.set_dofs_kp(KP_STEER, steer_dofs)
     car.set_dofs_kv(KV_STEER, steer_dofs)
     car.set_dofs_force_range(-EFF_STEER, EFF_STEER, steer_dofs)
+
+    return (wheel_dofs, steer_dofs)
