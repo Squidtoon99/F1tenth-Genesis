@@ -6,13 +6,90 @@ import torch
 
 import genesis as gs
 
+# load racetracks from f1tenth_racetracks
+import requests
+from io import StringIO
+import logging
+from tqdm import tqdm
 
-def resolve_track_path(reward_cfg: dict[str, Any], workspace_dir: str) -> str:
+TRACKS = {}
+
+
+def load_tracks(force=False) -> None:
+    # https://github.com/f1tenth/f1tenth_racetracks/tree/main
+
+    # check for local copy first (for development convenience)
+    local_path = os.path.join(os.path.dirname(__file__), "tracks.pickle")
+    if os.path.exists(local_path) and not force:
+        try:
+            import pickle
+
+            with open(local_path, "rb") as f:
+                global TRACKS
+                TRACKS = pickle.load(f)
+                if TRACKS:
+                    logging.info(
+                        f"Loaded {len(TRACKS)} tracks from local file: {local_path}"
+                    )
+                    return
+        except Exception as e:
+            logging.warning(f"Failed to load local tracks file: {e}")
+
+    repo = "f1tenth/f1tenth_racetracks"
+    api_url = f"https://api.github.com/repos/{repo}/contents/"
+
+    response = requests.get(api_url)
+    if response.status_code != 200 or not isinstance(contents := response.json(), list):
+        logging.warning(f"Failed to fetch repository contents: {response.status_code}")
+        return
+
+    for item in tqdm(contents, desc="Loading tracks", colour="blue"):
+        if item.get("type") == "dir" and (track_name := item.get("name")):
+            try:
+                centerline = requests.get(
+                    "https://raw.githubusercontent.com/"
+                    f"{repo}/main/{track_name}/{track_name.replace(' ', '')}_centerline.csv"
+                )
+                if centerline.status_code == 200:
+                    TRACKS[track_name] = np.genfromtxt(
+                        StringIO(centerline.text),
+                        delimiter=",",
+                        names=True,
+                        dtype=np.float32,
+                    )
+                    logging.info(f"Loaded track: {track_name}")
+                else:
+                    logging.warning(
+                        f"Failed to load centerline for {track_name}: {centerline.status_code}"
+                    )
+            except Exception as e:
+                logging.error(f"Error loading track {track_name}: {e}")
+
+    # Save a local copy for future runs
+    if TRACKS:
+        try:
+            import pickle
+
+            with open(local_path, "wb") as f:
+                pickle.dump(TRACKS, f)
+                logging.info(f"Saved tracks to local file: {local_path}")
+        except Exception as e:
+            logging.warning(f"Failed to save local tracks file: {e}")
+
+
+load_tracks()
+
+
+def resolve_track_data(reward_cfg: dict[str, Any], workspace_dir: str) -> np.ndarray:
     configured = reward_cfg.get("centerline_path")
     if configured is not None:
+        if not configured.endswith(".csv"):
+            # Check if its one of the tracks from f1tenth racetracks
+            if (track := TRACKS.get(configured)) is not None:
+                return track
         if not os.path.exists(configured):
             raise FileNotFoundError(f"centerline_path does not exist: {configured}")
-        return configured
+        return np.genfromtxt(configured, delimiter=",", names=True, dtype=np.float32)
 
     candidates = [
         os.path.join(
@@ -29,7 +106,7 @@ def resolve_track_path(reward_cfg: dict[str, Any], workspace_dir: str) -> str:
 
     for path in candidates:
         if os.path.exists(path):
-            return path
+            return np.genfromtxt(path, delimiter=",", names=True, dtype=np.float32)
 
     raise FileNotFoundError(
         "Could not locate SaoPaulo_centerline_with_boundaries.csv. "
@@ -42,10 +119,11 @@ def load_track_state(
     workspace_dir: str,
     device: torch.device,
 ) -> dict[str, Any]:
-    path = resolve_track_path(reward_cfg, workspace_dir)
-    data = np.genfromtxt(path, delimiter=",", names=True, dtype=np.float32)
+    data = resolve_track_data(reward_cfg, workspace_dir)
     if data is None or data.dtype.names is None:
-        raise ValueError(f"Could not parse track csv: {path}")
+        raise ValueError(
+            f"Could not parse track csv data from {reward_cfg.get('centerline_path')}"
+        )
     fields: Any = data
 
     required = {"x_m", "y_m", "w_tr_right_m", "w_tr_left_m"}
