@@ -57,7 +57,9 @@ class Task:
 
 def get_task(cfg: "Config") -> Task:
     return Task.from_config(
-        launch_strategy=LaunchStrategy.uniform_jittered(num_cars=20, mph_range=(10, 30)),
+        launch_strategy=LaunchStrategy.uniform_jittered(
+            num_cars=20, mph_range=(10, 30)
+        ),
         random_policy=True,
         table_name="warmup_1v0",
         time_out_fn=lambda steps, obs: steps >= MAX_STEPS,

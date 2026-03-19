@@ -3,10 +3,11 @@ import genesis as gs
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 # flake8: noqa: F401
+import numpy as np
 import torch
-
 from config import Config
 from policy import Policy, UniformRandomPolicy
 from replay import ReplayServer
@@ -34,7 +35,7 @@ def rollout_loop(cfg: "Config"):
         "term_not_moving_min_ds": 1e-3,
         "term_heading_error_rad": 3.0,
         "target_laps": 0,
-        "car_spawn_pos": (0.0, 0.0, 0.1),
+        "car_spawn_pos": (0.0, 0.0, 0.01),
         "car_spawn_rot": (0.0, 0.0, 0.0),
         "joint_names": [
             "left_rear_wheel_joint",
@@ -44,8 +45,8 @@ def rollout_loop(cfg: "Config"):
             "left_rear_wheel_joint": 0.0,
             "right_rear_wheel_joint": 0.0,
         },
-        "max_speed": 5.0,
-        "max_steer": 0.35,
+        "max_speed": 7.0,  # m/s
+        "max_steer": 0.4189,  # radianss
         "wheelbase": 0.325,
         "track_width": 0.20,
         "wheel_radius": 0.05,
@@ -62,7 +63,7 @@ def rollout_loop(cfg: "Config"):
         "future_track_width": 2.0,
     }
     reward_cfg = {
-        "centerline_path": "x:\\F1Tenth-Managed\\F1Tenth\\source\\F1Tenth\\F1Tenth\\tasks\\manager_based\\f1tenth\\custom_assets\\SaoPaulo_centerline_with_boundaries.csv",
+        "centerline_path": "Austin",
         "progress_k_fwd": 5.0,
         "progress_k_back": 5.0,
         "progress_max_lateral_m": 1.0,
@@ -81,7 +82,6 @@ def rollout_loop(cfg: "Config"):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     replay_server = ReplayServer()
-    step = 0
     while True:
 
         # Handling task selection
@@ -99,7 +99,7 @@ def rollout_loop(cfg: "Config"):
             )
             agent_policy.maybe_refresh(force=True)
 
-        num_envs = int(task.launch_strategy.data.get("num_cars", 20))
+        num_envs = int(task.launch_strategy.data.get("num_cars", 100))
         env = F1tenthEnv(
             num_envs=num_envs,
             env_cfg=env_cfg,
@@ -111,7 +111,6 @@ def rollout_loop(cfg: "Config"):
 
         obs, _ = env.reset()
         trajs = [[] for _ in range(num_envs)]
-
         for step in range(max_steps):
             actions = agent_policy.get_actions(obs)
             next_obs, reward, done, _extras = env.step(actions)

@@ -25,7 +25,7 @@ STEER_JOINTS = [
 
 # Parsed from your URDF
 WHEEL_RADIUS = 0.05  # meters
-WHEELBASE = 0.325  # meters (front axle x - rear axle x)
+WHEELBASE = 0.3302  # meters (front axle x - rear axle x)
 TRACK_WIDTH = 0.20  # meters (left y - right y)
 
 # Gains computed from URDF limits

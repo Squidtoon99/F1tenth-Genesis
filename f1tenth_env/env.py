@@ -26,6 +26,7 @@ from .terminations import (
 )
 from .utils import (
     build_step_state,
+    compute_oob_from_boundary_state,
     draw_track_boundaries_debug,
     invalidate_step_caches,
     load_track_state,
@@ -41,7 +42,6 @@ class F1tenthEnv:
         env_cfg,
         obs_cfg,
         reward_cfg,
-        command_cfg=None,
         show_viewer=False,
     ):
         self.num_actions = env_cfg["num_actions"]
@@ -156,6 +156,8 @@ class F1tenthEnv:
         self.extras: dict[str, Any] = {
             "observations": {},
             "termination": {},
+            "rewards": {},
+            "metrics": {},
         }
 
         self._step_state: dict[str, Any] = {}
@@ -239,7 +241,7 @@ class F1tenthEnv:
         yaw_jitter = float(self.env_cfg.get("reset_yaw_jitter_rad", 0.2))
         yaw += np.random.uniform(-yaw_jitter, yaw_jitter, size=(n,)).astype(np.float32)
 
-        spawn_z = float(self.env_cfg.get("car_spawn_pos", (0.0, 0.0, 0.1))[2])
+        spawn_z = float(self.env_cfg.get("car_spawn_pos", (0.0, 0.0, 0.01))[2])
         pos = np.concatenate(
             [spawn_xy.astype(np.float32), np.full((n, 1), spawn_z, dtype=np.float32)],
             axis=1,
@@ -311,6 +313,8 @@ class F1tenthEnv:
             episode_steps_buf=self.episode_steps_buf,
             lap_count_buf=self.lap_count_buf,
         )
+        self.extras["rewards"]["total"] = self.reward_buf
+        self.extras["rewards"]["terms"] = self.reward_state.get("last_reward_terms", {})
 
     def _compute_terminations(self):
         step_state = self._get_step_state()
@@ -328,6 +332,28 @@ class F1tenthEnv:
                 term_params=self.term_params,
             )
         )
+
+        boundary = step_state["boundary"]
+        oob_mask, oob_dist = compute_oob_from_boundary_state(
+            boundary,
+            margin_m=float(self.term_params["term_oob_margin_m"]),
+        )
+        progress_ds = step_state.get(
+            "progress_ds",
+            torch.zeros((self.num_envs,), dtype=gs.tc_float, device=self.device),
+        )
+        speed_xy = torch.linalg.norm(self.base_lin_vel[:, :2], dim=-1)
+
+        self.extras["metrics"] = {
+            "progress_ds": progress_ds,
+            "oob_dist": oob_dist,
+            "oob_mask": oob_mask.to(dtype=gs.tc_float),
+            "boundary_dist": boundary["boundary_dist"],
+            "lateral_error": boundary["ey"],
+            "speed_xy": speed_xy,
+            "episode_steps": self.episode_steps_buf.to(dtype=gs.tc_float),
+            "lap_count": self.lap_count_buf.to(dtype=gs.tc_float),
+        }
 
     def reset(self, envs_idx=None):
         if envs_idx is None:
