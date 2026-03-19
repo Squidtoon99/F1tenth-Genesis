@@ -8,3 +8,7 @@ __pycache__
 .pth
 .pt
 outputs
+
+# model checkpoints / track dumps
+.pickle
+tracks.pickle
