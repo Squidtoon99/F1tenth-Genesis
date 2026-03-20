@@ -133,7 +133,9 @@ class Policy(PolicyBase):
             self.log.exception("Failed to refresh policy from Redis: %s", exc)
             return False
 
-    def get_actions(self, observation: torch.Tensor) -> torch.Tensor:
+    def get_actions(
+        self, observation: torch.Tensor, exploit: bool = True
+    ) -> torch.Tensor:
         if observation.ndim != 2:
             raise ValueError("Observation batch must be rank-2 [batch, obs_dim]")
 

@@ -50,6 +50,7 @@ def rollout_loop(cfg: "Config"):
         "wheelbase": 0.325,
         "track_width": 0.20,
         "wheel_radius": 0.05,
+        "track": "Montreal",
     }
     obs_cfg = {
         "num_obs": 371,
@@ -63,7 +64,6 @@ def rollout_loop(cfg: "Config"):
         "future_track_width": 2.0,
     }
     reward_cfg = {
-        "centerline_path": "Austin",
         "progress_k_fwd": 5.0,
         "progress_k_back": 5.0,
         "progress_max_lateral_m": 1.0,
@@ -99,7 +99,7 @@ def rollout_loop(cfg: "Config"):
             )
             agent_policy.maybe_refresh(force=True)
 
-        num_envs = int(task.launch_strategy.data.get("num_cars", 100))
+        num_envs = int(task.launch_strategy.data.get("num_cars", 20))
         env = F1tenthEnv(
             num_envs=num_envs,
             env_cfg=env_cfg,
@@ -114,7 +114,10 @@ def rollout_loop(cfg: "Config"):
         for step in range(max_steps):
             actions = agent_policy.get_actions(obs)
             next_obs, reward, done, _extras = env.step(actions)
-
+            # if step % 10 == 0:
+            #     logging.warning(
+            #         f"Step {step}: reward={reward.mean().item():.3f}, done={done.float().mean().item():.3f} extras={_extras}"
+            #     )
             for agent_id in range(num_envs):
                 agent_done = bool(done[agent_id].item())
                 trajs[agent_id].append(

@@ -62,7 +62,7 @@ class F1tenthEnv:
         self.track_cache_id = self.reward_cfg.get("track_cache_id", "track")
 
         self.track_state = load_track_state(
-            reward_cfg=self.reward_cfg,
+            track=self.env_cfg["track"],
             workspace_dir=os.path.dirname(os.path.dirname(__file__)),
             device=self.device,
         )

@@ -1,7 +1,6 @@
 .env
 .env.production
 f1tenth_labs
-f110_description
 .vscode
 __pycache__
 *.pyc
@@ -12,3 +11,8 @@ outputs
 # model checkpoints / track dumps
 .pickle
 tracks.pickle
+
+# Cmake build files
+CmakeFiles
+CMakeCache.txt
+cmake_install.cmake

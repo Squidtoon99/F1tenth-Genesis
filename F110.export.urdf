@@ -10,7 +10,7 @@
     <visual>
   <origin xyz="0 0 0" rpy="0 0 0"/>
   <geometry>
-    <mesh filename="x:\F1tenth-Genesis\f110_description\meshes\chassis.STL"/>
+    <mesh filename="x:\F1tenth-Genesis\f1tenth_model\meshes\chassis.STL"/>
   </geometry>
 
       <material name="blue"/>
@@ -50,7 +50,7 @@
     <visual>
   <origin xyz="0 0 0" rpy="0 0 0"/>
   <geometry>
-    <mesh filename="x:\F1tenth-Genesis\f110_description\meshes\left_rear_wheel.STL"/>
+    <mesh filename="x:\F1tenth-Genesis\f1tenth_model\meshes\left_rear_wheel.STL"/>
   </geometry>
 
       <material name="black"/>
@@ -95,7 +95,7 @@
     <visual>
   <origin xyz="0 0 0" rpy="0 0 0"/>
   <geometry>
-    <mesh filename="x:\F1tenth-Genesis\f110_description\meshes\right_rear_wheel.STL"/>
+    <mesh filename="x:\F1tenth-Genesis\f1tenth_model\meshes\right_rear_wheel.STL"/>
   </geometry>
 
       <material name="black"/>
@@ -140,7 +140,7 @@
     <visual>
   <origin xyz="0 0 0" rpy="0 0 0"/>
   <geometry>
-    <mesh filename="x:\F1tenth-Genesis\f110_description\meshes\left_steering_hinge.STL"/>
+    <mesh filename="x:\F1tenth-Genesis\f1tenth_model\meshes\left_steering_hinge.STL"/>
   </geometry>
 
       <material name="grey"/>
@@ -178,7 +178,7 @@
     <visual>
   <origin xyz="0 0 0" rpy="0 0 0"/>
   <geometry>
-    <mesh filename="x:\F1tenth-Genesis\f110_description/meshes/right_steering_hinge.STL"/>
+    <mesh filename="x:\F1tenth-Genesis\f1tenth_model/meshes/right_steering_hinge.STL"/>
   </geometry>
 
       <material name="grey"/>
@@ -216,7 +216,7 @@
     <visual>
   <origin xyz="0 0 0" rpy="0 0 0"/>
   <geometry>
-    <mesh filename="x:\F1tenth-Genesis\f110_description\meshes\left_front_wheel.STL"/>
+    <mesh filename="x:\F1tenth-Genesis\f1tenth_model\meshes\left_front_wheel.STL"/>
   </geometry>
 
       <material name="black"/>
@@ -261,7 +261,7 @@
     <visual>
   <origin xyz="0 0 0" rpy="0 0 0"/>
   <geometry>
-    <mesh filename="x:\F1tenth-Genesis\f110_description\meshes\right_front_wheel.STL"/>
+    <mesh filename="x:\F1tenth-Genesis\f1tenth_model\meshes\right_front_wheel.STL"/>
   </geometry>
 
       <material name="black"/>
@@ -312,7 +312,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="x:\F1tenth-Genesis\f110_description\meshes\hokuyo.dae"/>
+        <mesh filename="x:\F1tenth-Genesis\f1tenth_model\meshes\hokuyo.dae"/>
         <material name="grey"/>
       </geometry>
     </visual>

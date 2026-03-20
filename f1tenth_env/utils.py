@@ -80,15 +80,14 @@ def load_tracks(force=False) -> None:
 load_tracks()
 
 
-def resolve_track_data(reward_cfg: dict[str, Any], workspace_dir: str) -> np.ndarray:
-    configured = reward_cfg.get("centerline_path")
+def resolve_track_data(configured: str | None, workspace_dir: str) -> np.ndarray:
     if configured is not None:
         if not configured.endswith(".csv"):
             # Check if its one of the tracks from f1tenth racetracks
             if (track := TRACKS.get(configured)) is not None:
                 return track
         if not os.path.exists(configured):
-            raise FileNotFoundError(f"centerline_path does not exist: {configured}")
+            raise FileNotFoundError(f"track does not exist: {configured}")
         return np.genfromtxt(configured, delimiter=",", names=True, dtype=np.float32)
 
     candidates = [
@@ -110,20 +109,18 @@ def resolve_track_data(reward_cfg: dict[str, Any], workspace_dir: str) -> np.nda
 
     raise FileNotFoundError(
         "Could not locate SaoPaulo_centerline_with_boundaries.csv. "
-        "Set reward_cfg['centerline_path'] explicitly."
+        "Set env_cfg['track'] explicitly."
     )
 
 
 def load_track_state(
-    reward_cfg: dict[str, Any],
+    track: str | None,
     workspace_dir: str,
     device: torch.device,
 ) -> dict[str, Any]:
-    data = resolve_track_data(reward_cfg, workspace_dir)
+    data = resolve_track_data(track, workspace_dir)
     if data is None or data.dtype.names is None:
-        raise ValueError(
-            f"Could not parse track csv data from {reward_cfg.get('centerline_path')}"
-        )
+        raise ValueError(f"Could not parse track csv data from {track}")
     fields: Any = data
 
     required = {"x_m", "y_m", "w_tr_right_m", "w_tr_left_m"}
