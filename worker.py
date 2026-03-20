@@ -23,58 +23,6 @@ logging.basicConfig(
 
 
 def rollout_loop(cfg: "Config"):
-    env_cfg = {
-        "num_actions": 2,
-        "episode_length": 25.0,
-        "clip_actions": 1.0,
-        "simulate_action_latency": True,
-        "term_oob_margin_m": 0.15,
-        "term_oob_max_consecutive": 15,
-        "term_speed_threshold": 0.2,
-        "term_not_moving_time_s": 2.0,
-        "term_not_moving_min_ds": 1e-3,
-        "term_heading_error_rad": 3.0,
-        "target_laps": 0,
-        "car_spawn_pos": (0.0, 0.0, 0.01),
-        "car_spawn_rot": (0.0, 0.0, 0.0),
-        "joint_names": [
-            "left_rear_wheel_joint",
-            "right_rear_wheel_joint",
-        ],
-        "default_joint_angles": {
-            "left_rear_wheel_joint": 0.0,
-            "right_rear_wheel_joint": 0.0,
-        },
-        "max_speed": 7.0,  # m/s
-        "max_steer": 0.4189,  # radianss
-        "wheelbase": 0.325,
-        "track_width": 0.20,
-        "wheel_radius": 0.05,
-        "track": "Montreal",
-    }
-    obs_cfg = {
-        "num_obs": 371,
-        "obs_scales": {
-            "lin_vel": 1.0,
-            "ang_vel": 1.0,
-        },
-        "contact_margin_m": 0.08,
-        "future_track_num_points": 60,
-        "future_track_horizon_s": 6.0,
-        "future_track_width": 2.0,
-    }
-    reward_cfg = {
-        "progress_k_fwd": 5.0,
-        "progress_k_back": 5.0,
-        "progress_max_lateral_m": 1.0,
-        "oob_margin_m": 0.5,
-        "oob_k": 10.0,
-        "reward_scales": {
-            "progress": 1.4,
-            "oob_penalty": 1.0,
-        },
-    }
-
     max_steps = int(os.getenv("COLLECTOR_STEPS", "10000"))
     n_steps = int(os.getenv("COLLECTOR_CHUNK_STEPS", "5"))
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -89,22 +37,23 @@ def rollout_loop(cfg: "Config"):
 
         if task.random_policy:
             agent_policy = UniformRandomPolicy(
-                action_dim=env_cfg["num_actions"], action_clip=env_cfg["clip_actions"]
+                action_dim=cfg.env["num_actions"],
+                action_clip=cfg.env["clip_actions"],
             )
         else:
             agent_policy = Policy(
                 cfg=cfg,
-                action_dim=env_cfg["num_actions"],
-                action_clip=env_cfg["clip_actions"],
+                action_dim=cfg.env["num_actions"],
+                action_clip=cfg.env["clip_actions"],
             )
             agent_policy.maybe_refresh(force=True)
 
         num_envs = int(task.launch_strategy.data.get("num_cars", 20))
         env = F1tenthEnv(
             num_envs=num_envs,
-            env_cfg=env_cfg,
-            obs_cfg=obs_cfg,
-            reward_cfg=reward_cfg,
+            env_cfg=cfg.env,
+            obs_cfg=cfg.obs,
+            reward_cfg=cfg.reward,
             show_viewer=__name__
             == "__main__",  # Only show viewer if running main.py directly
         )
