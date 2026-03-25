@@ -86,7 +86,6 @@ def train_loop(cfg: "Config"):
             name=f"trainer_{cfg.session_id}",
             config=cfg.dict(),
         ) as run:
-            # run.watch(models.actor, log="gradients", log_freq=500)
             while True:
                 epoch_policy_loss = 0.0
                 epoch_critic_loss = 0.0
@@ -101,65 +100,6 @@ def train_loop(cfg: "Config"):
                             "critic_loss": losses.critic_loss,
                         }
                     )
-                    # reward = transition_data.get("rew", transition_data.get("reward"))
-                    # done = transition_data["done"]
-                    # action = transition_data.get("act", transition_data.get("action"))
-                    # obs = transition_data["obs"]
-
-                    # if reward is None or action is None:
-                    #     raise KeyError(
-                    #         "Batch must contain reward/rew and action/act fields for logging."
-                    #     )
-
-                    # if not torch.is_tensor(reward):
-                    #     reward = torch.as_tensor(reward)
-                    # if not torch.is_tensor(done):
-                    #     done = torch.as_tensor(done)
-                    # if not torch.is_tensor(action):
-                    #     action = torch.as_tensor(action)
-                    # if not torch.is_tensor(obs):
-                    #     obs = torch.as_tensor(obs)
-
-                    # replay_sizes = {
-                    #     f"train/replay/size_{table_name}": float(table.size)
-                    #     for table_name, table in replay_server.tables.items()
-                    # }
-                    # replay_total = float(
-                    #     sum(table.size for table in replay_server.tables.values())
-                    # )
-
-                    # epoch_policy_loss += losses.policy_loss
-                    # epoch_critic_loss += losses.critic_loss
-
-                    # run.log(
-                    #     {
-                    #         "train/step": global_train_step,
-                    #         "train/loss/policy": losses.policy_loss,
-                    #         "train/loss/critic": losses.critic_loss,
-                    #         "train/batch/reward_mean": float(reward.mean().item()),
-                    #         "train/batch/reward_std": float(
-                    #             reward.std(unbiased=False).item()
-                    #         ),
-                    #         "train/batch/reward_min": float(reward.min().item()),
-                    #         "train/batch/reward_max": float(reward.max().item()),
-                    #         "train/batch/done_rate": float(done.float().mean().item()),
-                    #         "train/batch/action_mean_abs": float(
-                    #             action.abs().mean().item()
-                    #         ),
-                    #         "train/batch/action_std": float(
-                    #             action.std(unbiased=False).item()
-                    #         ),
-                    #         "train/batch/obs_mean_abs": float(obs.abs().mean().item()),
-                    #         "train/batch/obs_std": float(
-                    #             obs.std(unbiased=False).item()
-                    #         ),
-                    #         "train/replay/size_total": replay_total,
-                    #         **{f"train/{k}": v for k, v in losses.diagnostics.items()},
-                    #         **replay_sizes,
-                    #     },
-                    #     step=global_train_step,
-                    # )
-
                 epoch_batches = float(cfg.model["batches_per_epoch"])
                 current_version += 1
                 param_server.publish_actor(

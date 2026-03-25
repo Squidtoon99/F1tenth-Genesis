@@ -97,26 +97,6 @@ TASK_SPECS = [
 ]
 
 
-# class TaskSpec:
-#     def __init__(
-#         self,
-#         name: str,
-#         launch_strategy: LaunchStrategy,
-#         table_name: str | None,
-#         time_out_fn: Callable[[int, "torch.Tensor"], bool],
-#         opponent_policy: str | None = None,
-#     ):
-#         self.name = name
-#         self.launch_strategy = launch_strategy
-#         self.table_name = table_name
-#         self.time_out_fn = time_out_fn
-#         self.opponent_policy = opponent_policy
-
-#     @classmethod
-#     def random_spec(cls, cfg: "Config") -> "TaskSpec":
-#         return random.choice(TASK_SPECS)
-
-
 def get_task(cfg: "Config") -> Task:
     server = TaskServer(cfg)
 

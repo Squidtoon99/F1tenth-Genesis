@@ -54,22 +54,6 @@ class Models:
 class Losses:
     policy_loss: float
     critic_loss: float
-    # diagnostics: Dict[str, float]
-
-
-# def _grad_norm(params) -> float:
-#     total = 0.0
-#     for p in params:
-#         if p.grad is not None:
-#             total += float(p.grad.detach().pow(2).sum().item())
-#     return total**0.5
-
-
-# def _param_norm(params) -> float:
-#     total = 0.0
-#     for p in params:
-#         total += float(p.detach().pow(2).sum().item())
-#     return total**0.5
 
 
 class QRSACTrainer:
@@ -180,25 +164,7 @@ class QRSACTrainer:
                 target_param.data.mul_(1.0 - self.smooth_factor)
                 target_param.data.add_(self.smooth_factor * pred_param.data)
 
-        # diagnostics: Dict[str, float] = {
-        #     "policy/log_prob_mean": float(log_prob.detach().mean().item()),
-        #     "policy/log_prob_std": float(log_prob.detach().std(unbiased=False).item()),
-        #     "q/q1_mean": float(q1_mean.detach().mean().item()),
-        #     "q/q2_mean": float(q2_mean.detach().mean().item()),
-        #     "q/min_mean": float(q_sampled.detach().mean().item()),
-        #     "target/quantile_mean": float(target_quantiles.detach().mean().item()),
-        #     "target/quantile_std": float(
-        #         target_quantiles.detach().std(unbiased=False).item()
-        #     ),
-        #     "grad/actor_norm": actor_grad_norm,
-        #     "grad/critic_norm": critic_grad_norm,
-        #     "model/actor_param_norm": _param_norm(self.actor.parameters()),
-        #     "model/critic1_param_norm": _param_norm(self.critic1.parameters()),
-        #     "model/critic2_param_norm": _param_norm(self.critic2.parameters()),
-        # }
-
         return Losses(
             policy_loss=policy_loss.detach().item(),
             critic_loss=critic_loss.detach().item(),
-            # diagnostics=diagnostics,
         )
