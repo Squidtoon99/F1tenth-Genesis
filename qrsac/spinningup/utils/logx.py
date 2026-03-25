@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import os.path as osp, time, atexit, os
 import warnings
-from mpi_tools import proc_id, mpi_statistics_scalar
+from .mpi_tools import proc_id, mpi_statistics_scalar
 
 
 def is_json_serializable(v):

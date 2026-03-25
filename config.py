@@ -1,8 +1,11 @@
 import json
 import logging
+import os
+from dotenv import load_dotenv
 from redis import Redis
 from functools import wraps
-
+from param import S3ParameterServer
+import wandb
 
 class RedisWrapper:
     def __init__(self, redis_client: Redis, session_id: str):
@@ -30,7 +33,7 @@ class RedisWrapper:
 
 DEFAULT_CONFIG = {
     "obs": {
-        "num_obs": 371,
+        "num_obs": 370,
         "obs_scales": {
             "lin_vel": 1.0,
             "ang_vel": 1.0,
@@ -83,6 +86,12 @@ DEFAULT_CONFIG = {
     "model": {
         "hidden_layers": [256, 256],
         "num_quantiles": 32,
+        "rew_gamma": 0.9896,
+        "n_step": 7,
+        "replay_tables": ["1v0", "1v1", "mistake_learning"],
+        "minimum_train_samples": 40000,
+        "batches_per_epoch": 6000,
+        "batch_size": 1024,
     },
 }
 
@@ -91,39 +100,42 @@ class Config:
     """Configuration class for the application."""
 
     def __init__(self, session_id: str, redis_uri: str | None):
+        load_dotenv()
         self.session_id = session_id
         self.redis_uri = redis_uri or "redis://localhost:6379/0"
-        self.redis_client = Redis.from_url(self.redis_uri, decode_responses=True)
-        self.redis_binary_client = Redis.from_url(
+        self._redis_client = Redis.from_url(self.redis_uri, decode_responses=True)
+        self._redis_binary_client = Redis.from_url(
             self.redis_uri, decode_responses=False
         )
-        self.redis = RedisWrapper(self.redis_client, self.session_id)
-        self.redis_b = RedisWrapper(self.redis_binary_client, self.session_id)
+        self.redis = RedisWrapper(self._redis_client, self.session_id)
+        self.redis_b = RedisWrapper(self._redis_binary_client, self.session_id)
         self.logger = logging.getLogger("Genesis")
-        self._cfg = {}
+        self._cfg = DEFAULT_CONFIG.copy()
         # Load redis overrides
 
-        for key in ["obs", "env", "reward"]:
+        for key in ["obs", "env", "reward", "model"]:
             redis_key = f"config:{key}"
-            if self.redis.exists(redis_key):
-                try:
-                    if value := self.redis.get(redis_key):
-                        self._cfg[key] = {
-                            **json.loads(str(value)),
-                            **DEFAULT_CONFIG[key],
-                        }  # Override defaults with Redis values
-                        self.logger.info(
-                            f"Loaded config override for '{key}' from Redis."
-                        )
-                    else:
-                        self._cfg[key] = DEFAULT_CONFIG[key]
-                        self.logger.info(
-                            f"No value found for '{redis_key}' in Redis. Using default config."
-                        )
-                except Exception as e:
-                    self.logger.error(
-                        f"Failed to load config override for '{key}': {e}"
+            try:
+                if value := self.redis.get(redis_key):
+                    self._cfg[key] = {
+                        **json.loads(str(value)),
+                        **DEFAULT_CONFIG[key],
+                    }  # Override defaults with Redis values
+                    self.logger.info(f"Loaded config override for '{key}' from Redis.")
+                else:
+                    self._cfg[key] = DEFAULT_CONFIG[key]
+                    self.logger.info(
+                        f"No value found for '{redis_key}' in Redis. Using default config."
                     )
+            except Exception as e:
+                self.logger.error(f"Failed to load config override for '{key}': {e}")
+
+        # Load S3 config from environment variables
+        self._param_server = S3ParameterServer.from_env()
+
+    def rkey(self, key: str) -> str:
+        """Helper method to get a Redis key with session prefix."""
+        return f"{self.session_id}:{key}"
 
     @property
     def obs(self):
@@ -140,3 +152,10 @@ class Config:
     @property
     def model(self):
         return self._cfg["model"]
+
+    @property
+    def s3_parameter_server(self):
+        return self._param_server
+
+    def dict(self):
+        return self._cfg

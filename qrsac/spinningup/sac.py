@@ -4,8 +4,8 @@ import numpy as np
 import torch
 from torch.optim import Adam
 import time
-import core as core
-from spinup.utils.logx import EpochLogger
+from . import core
+from .utils.logx import EpochLogger
 
 
 class ReplayBuffer:
@@ -14,9 +14,9 @@ class ReplayBuffer:
     """
 
     def __init__(self, obs_dim, act_dim, size):
-        self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
-        self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
-        self.act_buf = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
+        self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)  # type: ignore
+        self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)  # type: ignore
+        self.act_buf = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)  # type: ignore
         self.rew_buf = np.zeros(size, dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.ptr, self.size, self.max_size = 0, 0, size
