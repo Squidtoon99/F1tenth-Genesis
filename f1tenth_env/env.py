@@ -55,8 +55,11 @@ class F1tenthEnv:
 
         self.device = gs.device if gs.device is not None else torch.device("cpu")
         self.simulate_action_latency = self.env_cfg.get("simulate_action_latency", True)
-        self.dt = 0.02
+        self.dt = 0.01
         self.max_episode_steps = math.ceil(self.env_cfg["episode_length"] / self.dt)
+
+        self.spawn_strategy = self.env_cfg.get("launch_strategy", "uniform_jittered")
+        self.spawn_data = self.env_cfg.get("launch_strategy_data", {"num_cars": 20})
 
         self.obs_scales = obs_cfg["obs_scales"]
         self.track_cache_id = self.reward_cfg.get("track_cache_id", "track")
@@ -80,7 +83,7 @@ class F1tenthEnv:
                 max_FPS=int(1.0 / self.dt),
             ),
             rigid_options=gs.options.RigidOptions(enable_self_collision=False),
-            sim_options=gs.options.SimOptions(dt=self.dt),
+            sim_options=gs.options.SimOptions(dt=self.dt, substeps=2),
             show_viewer=show_viewer,
         )
 
@@ -93,6 +96,11 @@ class F1tenthEnv:
             )
         )
 
+        if self.scene.viewer and show_viewer:
+            self.scene.viewer.follow_entity(self.car)
+            self.cam1 = self.scene.add_camera(
+                res=(1024, 1024), pos=(2, 0, 1), lookat=(0, 0, 0.5), debug=True
+            )
         self.scene.build(n_envs=num_envs)
         if self.show_viewer:
             draw_track_boundaries_debug(
@@ -139,6 +147,12 @@ class F1tenthEnv:
             (self.num_envs, self.num_actions), dtype=gs.tc_float, device=gs.device
         )
         self.last_actions = torch.zeros_like(self.actions)
+
+        self.wheel_omega_cmd = torch.zeros(
+            (self.num_envs, len(self.wheel_dofs)),
+            dtype=gs.tc_float,
+            device=gs.device,
+        )
 
         self.reward_state = init_reward_state(
             reward_scales=self.reward_cfg["reward_scales"],
@@ -187,7 +201,7 @@ class F1tenthEnv:
         return torch.from_numpy(quat).to(device=self.device, dtype=gs.tc_float)
 
     def _sample_track_spawn(
-        self, env_ids: torch.Tensor
+        self, env_ids: torch.Tensor, centerline_idx: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         n = int(env_ids.numel())
         if n == 0:
@@ -203,7 +217,10 @@ class F1tenthEnv:
                 "centerline must contain at least 3 points for reset sampling"
             )
 
-        idx = torch.randint(0, num_pts, (n,), device=self.device)
+        if centerline_idx is None:
+            idx = torch.randint(0, num_pts, (n,), device=self.device)
+        else:
+            idx = centerline_idx
         idx_np = idx.detach().cpu().numpy().astype(np.int64)
 
         prev_idx = (idx_np - 1) % num_pts
@@ -241,7 +258,7 @@ class F1tenthEnv:
         yaw_jitter = float(self.env_cfg.get("reset_yaw_jitter_rad", 0.2))
         yaw += np.random.uniform(-yaw_jitter, yaw_jitter, size=(n,)).astype(np.float32)
 
-        spawn_z = float(self.env_cfg.get("car_spawn_pos", (0.0, 0.0, 0.01))[2])
+        spawn_z = float(self.env_cfg.get("car_spawn_pos", (0.0, 0.0, 0.1))[2])
         pos = np.concatenate(
             [spawn_xy.astype(np.float32), np.full((n, 1), spawn_z, dtype=np.float32)],
             axis=1,
@@ -253,19 +270,65 @@ class F1tenthEnv:
             quat,
         )
 
-    def _apply_root_reset(self, env_ids: torch.Tensor):
-        pos, quat = self._sample_track_spawn(env_ids)
-        if pos.shape[0] == 0:
-            return
-
+    def _apply_root_reset(self, env_ids: torch.Tensor) -> torch.Tensor | None:
         car = self.car  # type: Any
         if not hasattr(car, "set_pos") or not hasattr(car, "set_quat"):
             raise AttributeError(
                 "Genesis car entity must expose set_pos and set_quat for randomized reset"
             )
 
-        car.set_pos(pos, envs_idx=env_ids)
-        car.set_quat(quat, envs_idx=env_ids, zero_velocity=True, relative=False)
+        match self.spawn_strategy:
+            case "eval_launch":
+                # For evaluation, we can use fixed spawn point (first point on the track)
+                pos, quat = self._sample_track_spawn(
+                    env_ids,
+                    centerline_idx=torch.zeros(
+                        (env_ids.numel(),), dtype=torch.int64, device=self.device
+                    ),
+                )
+
+                car.set_pos(pos, envs_idx=env_ids)
+                car.set_quat(quat, envs_idx=env_ids, zero_velocity=True, relative=False)
+            case "uniform_jittered" | _:
+                pos, quat = self._sample_track_spawn(env_ids)
+                if pos.shape[0] == 0:
+                    return None
+                car.set_pos(pos, envs_idx=env_ids)
+                car.set_quat(quat, envs_idx=env_ids, zero_velocity=True, relative=False)
+
+        return None  # self._apply_reset_speed(env_ids)
+
+    def _apply_reset_speed(self, env_ids: torch.Tensor) -> torch.Tensor | None:
+        n = int(env_ids.numel())
+        if n == 0:
+            return None
+
+        speed_range = self.spawn_data.get("mps_range")
+        if speed_range is not None and len(speed_range) == 2:
+            v_min, v_max = float(speed_range[0]), float(speed_range[1])
+        else:
+            v_min = float(self.env_cfg.get("reset_speed_min_mps", 0.0))
+            v_max = float(self.env_cfg.get("reset_speed_max_mps", 0.0))
+        if v_max < v_min:
+            v_min, v_max = v_max, v_min
+        if abs(v_min) < 1e-8 and abs(v_max) < 1e-8:
+            return None
+
+        sampled_speed = np.random.uniform(v_min, v_max, size=(n,)).astype(np.float32)
+        wheel_radius = max(float(self.env_cfg.get("wheel_radius", 0.05)), 1e-6)
+        wheel_omega = sampled_speed / wheel_radius
+
+        steer_targets = torch.zeros(
+            (n, len(self.steer_dofs)), dtype=gs.tc_float, device=self.device
+        )
+        wheel_omegas = torch.from_numpy(
+            np.repeat(wheel_omega[:, None], len(self.wheel_dofs), axis=1)
+        ).to(device=self.device, dtype=gs.tc_float)
+
+        car = self.car  # type: Any
+        car.control_dofs_position(steer_targets, self.steer_dofs, envs_idx=env_ids)
+        car.control_dofs_velocity(wheel_omegas, self.wheel_dofs, envs_idx=env_ids)
+        return torch.from_numpy(sampled_speed).to(device=self.device, dtype=gs.tc_float)
 
     def _get_step_state(self) -> dict[str, Any]:
         if not self._step_state_valid:
@@ -368,13 +431,24 @@ class F1tenthEnv:
             return self.obs_buf, self.extras
 
         env_ids = self._mask_to_env_ids(envs_idx)
-        self._apply_root_reset(env_ids)
+        _ = self._apply_root_reset(env_ids)
         self.scene.step()
 
         self.base_lin_vel.masked_fill_(envs_idx[:, None], 0.0)
         self.base_ang_vel.masked_fill_(envs_idx[:, None], 0.0)
         self.actions.masked_fill_(envs_idx[:, None], 0.0)
         self.last_actions.masked_fill_(envs_idx[:, None], 0.0)
+        self.wheel_omega_cmd.masked_fill_(envs_idx[:, None], 0.0)
+        # if reset_speed_mps is not None:
+        #     max_speed = max(float(self.env_cfg.get("max_speed", 5.0)), 1e-6)
+        #     clip_actions = float(self.env_cfg.get("clip_actions", 1.0))
+        #     reset_throttle = torch.clamp(
+        #         reset_speed_mps / max_speed,
+        #         min=-clip_actions,
+        #         max=clip_actions,
+        #     )
+        #     self.actions[env_ids, 0] = reset_throttle
+        #     self.last_actions[env_ids, 0] = reset_throttle
         self.episode_steps_buf.masked_fill_(envs_idx, 0)
         self.lap_count_buf.masked_fill_(envs_idx, 0)
         self.reset_buf.masked_fill_(envs_idx, False)
@@ -416,7 +490,7 @@ class F1tenthEnv:
             steer_targets[i] = np.array([left, right], dtype=np.float32)
             wheel_omegas[i] = wheel_omegas_from_v(
                 delta_center=float(steer[i]) * self.env_cfg.get("max_steer", 0.35),
-                v=float(throttle[i]) * self.env_cfg.get("max_speed", 5.0),
+                v=float(throttle[i]) * self.env_cfg.get("max_speed", 10.0),
                 r=self.env_cfg.get("wheel_radius", 0.05),
                 L=self.env_cfg.get("wheelbase", 0.325),
                 W=self.env_cfg.get("track_width", 0.20),

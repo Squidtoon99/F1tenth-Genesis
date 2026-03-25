@@ -154,8 +154,8 @@ def build_observation(
 ) -> torch.Tensor:
     obs = torch.concatenate(
         (
-            base_lin_vel,
-            base_ang_vel,
+            base_lin_vel[:2],
+            base_ang_vel[:2],
             obs_track_progress(centerline, base_pos, device),
             obs_centerline_angle(step_state, base_quat),
             obs_contact_flag(step_state, obs_cfg),
@@ -171,12 +171,12 @@ def build_observation(
         dim=-1,
     )
 
-    if obs.shape[1] >= num_obs:
-        return obs[:, :num_obs]
+    actual_obs_dim = int(obs.shape[1])
+    if actual_obs_dim != num_obs:
+        raise ValueError(
+            "Observation shape mismatch: "
+            f"expected num_obs={num_obs}, got {actual_obs_dim}. "
+            "Check obs_cfg['num_obs'] and observation component sizes."
+        )
 
-    pad = torch.zeros(
-        (num_envs, num_obs - obs.shape[1]),
-        dtype=gs.tc_float,
-        device=device,
-    )
-    return torch.concatenate((obs, pad), dim=-1)
+    return obs
