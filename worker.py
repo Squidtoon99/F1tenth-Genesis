@@ -13,7 +13,18 @@ from policy import Policy, UniformRandomPolicy
 from replay import ReplayServer
 from task import get_task
 from f1tenth_env import F1tenthEnv
+import rerun as rr
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
+import wandb
+
+rr.init("f1tenth-genesis", spawn=True)
 # logging setup
 logging.basicConfig(
     level=logging.INFO,
@@ -23,13 +34,20 @@ logging.basicConfig(
 
 
 def rollout_loop(cfg: "Config"):
-    max_steps = int(os.getenv("COLLECTOR_STEPS", "10000"))
-    n_steps = int(os.getenv("COLLECTOR_CHUNK_STEPS", "5"))
+    max_steps = int(os.getenv("COLLECTOR_STEPS", "5000"))
+    n_steps = cfg.model.get("n_step", 5)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(os.getenv("ROLLOUT_DIR", "outputs/random_rollouts")) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    replay_server = ReplayServer()
+    replay_server = ReplayServer(cfg)
+
+    run = wandb.init(
+        project="f1tenth-genesis",
+        name=f"rollout_{cfg.session_id}",
+        config=cfg.dict(),
+    )
+
     while True:
 
         # Handling task selection
@@ -50,23 +68,24 @@ def rollout_loop(cfg: "Config"):
 
         num_envs = int(task.launch_strategy.data.get("num_cars", 20))
         env = F1tenthEnv(
+            env_cfg={
+                "launch_strategy": task.launch_strategy.type,
+                "launch_strategy_data": task.launch_strategy.data,
+                **cfg.env,
+            },
             num_envs=num_envs,
-            env_cfg=cfg.env,
             obs_cfg=cfg.obs,
             reward_cfg=cfg.reward,
-            show_viewer=__name__
-            == "__main__",  # Only show viewer if running main.py directly
+            show_viewer=os.getenv("SHOW_VIEWER", "1" if __name__ == "__main__" else "0")
+            == "1",
         )
 
         obs, _ = env.reset()
-        trajs = [[] for _ in range(num_envs)]
+        trajs = [[] for _ in range(num_envs)]  # list of trajectories for each agent
+
         for step in range(max_steps):
-            actions = agent_policy.get_actions(obs)
-            next_obs, reward, done, _extras = env.step(actions)
-            # if step % 10 == 0:
-            #     logging.warning(
-            #         f"Step {step}: reward={reward.mean().item():.3f}, done={done.float().mean().item():.3f} extras={_extras}"
-            #     )
+            actions = agent_policy.get_actions(obs, exploit=task.is_eval)
+            next_obs, reward, done, extra = env.step(actions)
             for agent_id in range(num_envs):
                 agent_done = bool(done[agent_id].item())
                 trajs[agent_id].append(
@@ -74,25 +93,17 @@ def rollout_loop(cfg: "Config"):
                         "obs": obs[agent_id].detach().cpu(),
                         "action": actions[agent_id].detach().cpu(),
                         "reward": reward[agent_id].item(),
+                        "next_obs": next_obs[agent_id].detach().cpu(),
                         "done": agent_done,
                     }
                 )
-                # TODO: Check the mistakes and introduce mistake learning tasks here
 
-            if step + 1 >= n_steps and task.table_name:
-                # Construct N-Step subtrajectory if data collection task
-                for traj in trajs:
-                    replay_server.write(task.table_name, traj[-n_steps:])
             obs = next_obs
 
             if task.time_out_fn(step, obs):
                 break
         logging.info(f"Task finished after {step+1} steps. Resetting environment...")
         env.close()
-
-        if __name__ == "__main__":
-            break  # Only run one episode if running main.py directly
-
 
 def main():
     logging.info("Initializing Genesis and setting up the scene...")

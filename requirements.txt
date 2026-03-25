@@ -4,3 +4,6 @@ torch
 torchvision
 redis
 pandas
+boto3
+botocore
+python-dotenv

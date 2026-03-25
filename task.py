@@ -1,13 +1,11 @@
+import random
 from typing import TYPE_CHECKING, List, Optional
-from collections.abc import Callable
-
 
 if TYPE_CHECKING:
     from config import Config
 
-    import torch
 
-MAX_STEPS = 1000
+MAX_STEPS = 3000
 
 
 class LaunchStrategy:
@@ -16,12 +14,12 @@ class LaunchStrategy:
         self.data = data
 
     @classmethod
-    def uniform_jittered(cls, num_cars: int, mph_range: tuple):
+    def uniform_jittered(cls, num_cars: int, mps_range: tuple):
         return cls(
             type="uniform_jittered",
             data={
                 "num_cars": num_cars,
-                "mph_range": mph_range,
+                "mps_range": mps_range,
             },
         )
 
@@ -57,7 +55,7 @@ class TaskServer:
     def __init__(self, cfg: "Config"):
         self.cfg = cfg
 
-        self.redis = cfg.redis_client
+        self.redis = cfg.redis
 
     @property
     def warm_up(self) -> bool:
@@ -86,23 +84,37 @@ class TaskServer:
         raise NotImplementedError("No mistake learning tasks implemented yet.")
 
 
-class TaskSpec:
-    def __init__(
-        self,
-        name: str,
-        launch_strategy: LaunchStrategy,
-        table_name: str | None,
-        time_out_fn: Callable[[int, "torch.Tensor"], bool],
-        opponent_policy: str | None = None,
-    ):
-        self.name = name
-        self.launch_strategy = launch_strategy
-        self.table_name = table_name
-        self.time_out_fn = time_out_fn
-        self.opponent_policy = opponent_policy
+TASK_SPECS = [
+    Task(
+        launch_strategy=LaunchStrategy.uniform_jittered(
+            num_cars=500, mps_range=(0.0, 0.0)
+        ),
+        random_policy=False,
+        table_name="1v0",
+        time_out_fn=lambda steps, obs: steps >= MAX_STEPS,
+        is_eval=False,
+    ),
+]
 
-    @classmethod
-    def random_spec(cls, cfg: "Config") -> "TaskSpec": ...
+
+# class TaskSpec:
+#     def __init__(
+#         self,
+#         name: str,
+#         launch_strategy: LaunchStrategy,
+#         table_name: str | None,
+#         time_out_fn: Callable[[int, "torch.Tensor"], bool],
+#         opponent_policy: str | None = None,
+#     ):
+#         self.name = name
+#         self.launch_strategy = launch_strategy
+#         self.table_name = table_name
+#         self.time_out_fn = time_out_fn
+#         self.opponent_policy = opponent_policy
+
+#     @classmethod
+#     def random_spec(cls, cfg: "Config") -> "TaskSpec":
+#         return random.choice(TASK_SPECS)
 
 
 def get_task(cfg: "Config") -> Task:
@@ -111,10 +123,10 @@ def get_task(cfg: "Config") -> Task:
     if server.warm_up:
         return Task(
             launch_strategy=LaunchStrategy.uniform_jittered(
-                num_cars=20, mph_range=(10, 30)
+                num_cars=400, mps_range=(0.5, 1.0)
             ),
             random_policy=True,
-            table_name="warmup_1v0",
+            table_name="1v0",
             time_out_fn=lambda steps, obs: steps >= MAX_STEPS,
             is_eval=False,
         )
@@ -133,12 +145,5 @@ def get_task(cfg: "Config") -> Task:
         return server.pop_mistake_learning_task()
     else:
         # Standard data collection task
-        task_spec = TaskSpec.random_spec(cfg)
-        return Task(
-            launch_strategy=task_spec.launch_strategy,
-            random_policy=False,
-            table_name=task_spec.table_name,
-            time_out_fn=task_spec.time_out_fn,
-            is_eval=False,
-            opponent_policy=task_spec.opponent_policy,
-        )
+        # task_spec = TaskSpec.random_spec(cfg)
+        return random.choice(TASK_SPECS)
