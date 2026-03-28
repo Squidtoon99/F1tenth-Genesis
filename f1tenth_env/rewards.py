@@ -10,16 +10,14 @@ from .utils import compute_oob_from_boundary_state
 def init_reward_state(
     reward_scales: dict[str, float],
     num_envs: int,
-    dt: float,
     device: torch.device,
 ) -> dict[str, Any]:
-    scaled = {name: float(scale) * dt for name, scale in reward_scales.items()}
     episode_sums = {
         name: torch.zeros((num_envs,), dtype=gs.tc_float, device=device)
-        for name in scaled.keys()
+        for name in reward_scales.keys()
     }
     return {
-        "reward_scales": scaled,
+        "reward_scales": reward_scales,
         "episode_sums": episode_sums,
         "last_reward_terms": {},
         "prev_s": None,
@@ -161,15 +159,14 @@ def compute_rewards(
     progress = reward_progress(step_state, reward_cfg)
     oob_penalty = reward_oob_penalty(step_state, reward_cfg)
 
-    progress = torch.where(
-        oob_penalty.unsqueeze(1) < 0.0, torch.zeros_like(progress), progress
-    )
+    progress = torch.where(oob_penalty < 0.0, torch.zeros_like(progress), progress)
+
+    progress *= reward_cfg["reward_scales"]["progress"]
+    oob_penalty *= reward_cfg["reward_scales"]["oob_penalty"]
 
     last_terms = {"progress": progress.clone(), "oob_penalty": oob_penalty.clone()}
 
-    reward_buf += (
-        reward_state["reward_scales"]["progress"] * progress.item()
-        + reward_state["reward_scales"]["oob_penalty"] * oob_penalty.item()
-    )
+    # Add to also check that reward shapes are correct and compatible with reward_buf
+    reward_buf += progress + oob_penalty
     reward_state["last_reward_terms"] = last_terms
     return reward_buf, step_state

@@ -239,8 +239,8 @@ def rollout_loop(cfg: "Config"):
         # Handling task selection
         task = Task(
             launch_strategy=LaunchStrategy.uniform_jittered(
-                num_cars=1,
-                mps_range=(0.5, 1.0),
+                num_cars=2,
+                mps_range=(0.0, 1.0),
             ),
             random_policy=True,
             table_name=None,
@@ -278,13 +278,25 @@ def rollout_loop(cfg: "Config"):
         obs, _ = env.reset()
         extras = []
 
-        env.cam1.start_recording()
         for step in range(max_steps):
-            actions = agent_policy.get_actions(obs, exploit=task.is_eval)
+            # actions = agent_policy.get_actions(obs, exploit=task.is_eval)
+
+            if step <= 20:
+                actions = torch.zeros(
+                    (num_envs, cfg.env["num_actions"]), device=obs.device
+                )
+            elif step <= 40:
+                actions = torch.tensor(
+                    [[0.5, 0.0] for _ in range(num_envs)], device=obs.device
+                )
+            else:
+                actions = torch.tensor(
+                    [[-1.0, 0.0] for _ in range(num_envs)], device=obs.device
+                )
+
             next_obs, reward, done, extra = env.step(
                 actions, n_steps=cfg.env.get("control_interval", 10)
             )
-            env.scene.step()
             for agent_id in range(num_envs):
                 agent_done = bool(done[agent_id].item())
                 _log_agent_step(
@@ -307,7 +319,7 @@ def rollout_loop(cfg: "Config"):
         env.close()
         episode += 1
 
-
+        break
 def main():
     logging.info("Initializing Genesis and setting up the scene...")
     rr.init("f1tenth-genesis", spawn=True)

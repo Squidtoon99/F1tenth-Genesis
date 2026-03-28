@@ -103,7 +103,7 @@ class F1tenthEnv:
 
         if self.scene.viewer and show_viewer:
             self.scene.viewer.follow_entity(self.car)
-        
+
         if enable_recording:
             self.cam1 = self.scene.add_camera(
                 res=(1024, 1024), pos=(2, 0, 1), lookat=(0, 0, 0.5), debug=True
@@ -119,6 +119,8 @@ class F1tenthEnv:
                 w_tr_right=self.w_tr_right,
                 reward_cfg=self.reward_cfg,
             )
+        if self.cam1 is not None:
+            self.cam1.start_recording()
 
         self.wheel_dofs, self.steer_dofs = setup_entity_controls(self.car)
 
@@ -166,7 +168,6 @@ class F1tenthEnv:
         self.reward_state = init_reward_state(
             reward_scales=self.reward_cfg["reward_scales"],
             num_envs=self.num_envs,
-            dt=self.dt,
             device=self.device,
         )
         self.term_params = init_termination_params(self.env_cfg, self.dt)
@@ -540,6 +541,7 @@ class F1tenthEnv:
 
         # Only apply brake torque to environments with non-zero brake
         brake_mask = brake > 1e-3
+        # also only apply brake 
         if brake_mask.any():
             brake_env_ids = env_ids[brake_mask]
             car.control_dofs_force(

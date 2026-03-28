@@ -45,9 +45,8 @@ def rollout_loop(cfg: "Config"):
         name=f"rollout_{cfg.session_id}",
         config=cfg.dict(),
     )
-
+    episode = 0
     while True:
-
         # Handling task selection
         task = get_task(cfg)
 
@@ -74,8 +73,8 @@ def rollout_loop(cfg: "Config"):
             num_envs=num_envs,
             obs_cfg=cfg.obs,
             reward_cfg=cfg.reward,
-            show_viewer=os.getenv("SHOW_VIEWER", "1" if __name__ == "__main__" else "0")
-            == "1",
+            show_viewer=False,
+            enable_recording=task.is_eval,
         )
 
         obs, _ = env.reset()
@@ -103,6 +102,11 @@ def rollout_loop(cfg: "Config"):
 
             if task.time_out_fn(step, obs):
                 break
+        if env.cam1 is not None:
+            env.cam1.stop_recording(
+                save_to_filename=output_dir / f"episode_{episode}.mp4", fps=60
+            )
+            episode += 1
         logging.info(f"Task finished after {step+1} steps. Resetting environment...")
         env.close()
 
