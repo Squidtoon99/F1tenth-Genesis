@@ -105,12 +105,13 @@ def _log_observation_fields(agent_path: str, obs: torch.Tensor) -> None:
     if obs_dim < 10:
         return
 
-    lin_vel = obs_cpu[0:3]
-    ang_vel = obs_cpu[3:6]
-    track_progress = obs_cpu[6:8]
-    centerline_angle = obs_cpu[8]
-    wall_contact_flag = obs_cpu[9]
-    future_pts_flat = obs_cpu[10:]
+    lin_vel = obs_cpu[0:2]
+    ang_vel = obs_cpu[2:3]
+    track_progress = obs_cpu[3:5]
+    centerline_angle = obs_cpu[5]
+    centerline_distance = obs_cpu[6]
+    wall_contact_flag = obs_cpu[7]
+    future_pts_flat = obs_cpu[8:]
 
     rr.log(
         f"{agent_path}/obs/linear_velocity",
@@ -118,7 +119,7 @@ def _log_observation_fields(agent_path: str, obs: torch.Tensor) -> None:
     )
     rr.log(
         f"{agent_path}/obs/angular_velocity",
-        rr.Arrows2D(vectors=[(-ang_vel[:2]).numpy()]),
+        rr.Arrows2D(vectors=[(ang_vel[:2]).numpy()]),
     )
     rr.log(
         f"{agent_path}/obs/track_progress_cos",
@@ -131,6 +132,10 @@ def _log_observation_fields(agent_path: str, obs: torch.Tensor) -> None:
     rr.log(
         f"{agent_path}/obs/centerline_angle",
         rr.Scalars(float(centerline_angle.item())),
+    )
+    rr.log(
+        f"{agent_path}/obs/centerline_distance",
+        rr.Scalars(float(centerline_distance.item())),
     )
     rr.log(
         f"{agent_path}/obs/wall_contact_flag",
@@ -221,8 +226,7 @@ def process_eval_data(cfg: "Config", task: Any, extras: Any, traj: list) -> dict
 
 
 def rollout_loop(cfg: "Config"):
-    max_steps = int(os.getenv("COLLECTOR_STEPS", "1000"))
-    n_steps = cfg.model.get("n_step", 5)
+    max_steps = int(os.getenv("COLLECTOR_STEPS", "500"))
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(os.getenv("ROLLOUT_DIR", "outputs/random_rollouts")) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -235,7 +239,7 @@ def rollout_loop(cfg: "Config"):
         # Handling task selection
         task = Task(
             launch_strategy=LaunchStrategy.uniform_jittered(
-                num_cars=2,
+                num_cars=1,
                 mps_range=(0.5, 1.0),
             ),
             random_policy=True,
@@ -276,7 +280,9 @@ def rollout_loop(cfg: "Config"):
         env.cam1.start_recording()
         for step in range(max_steps):
             actions = agent_policy.get_actions(obs, exploit=task.is_eval)
-            next_obs, reward, done, extra = env.step(actions)
+            next_obs, reward, done, extra = env.step(
+                actions, n_steps=cfg.env.get("control_interval", 10)
+            )
             env.scene.step()
             for agent_id in range(num_envs):
                 agent_done = bool(done[agent_id].item())
@@ -293,14 +299,6 @@ def rollout_loop(cfg: "Config"):
                 )
             obs = next_obs
 
-            # follow the first agent for episode-level logging
-            position = env.car.get_pos(envs_idx=[0])[0]
-
-            env.cam1.set_pose(
-                lookat=position.cpu() + np.array([0.0, 0.0, 0.5]),
-                pos=position.cpu() + np.array([2.0, 0.0, 4.0]),
-            )
-            env.cam1.render()
         logging.info(f"Task finished after {step+1} steps. Resetting environment...")
         env.cam1.stop_recording(
             save_to_filename=output_dir / f"episode_{episode}.mp4", fps=60
@@ -311,7 +309,7 @@ def rollout_loop(cfg: "Config"):
 
 def main():
     logging.info("Initializing Genesis and setting up the scene...")
-    rr.init("f1tenth-genesis", spawn=False)
+    rr.init("f1tenth-genesis", spawn=True)
     gs.init()
 
     session_id = os.getenv("SESSION_ID", "0")

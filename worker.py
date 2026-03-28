@@ -13,7 +13,6 @@ from policy import Policy, UniformRandomPolicy
 from replay import ReplayServer
 from task import get_task
 from f1tenth_env import F1tenthEnv
-import rerun as rr
 
 try:
     from dotenv import load_dotenv
@@ -24,7 +23,6 @@ except ImportError:
 
 import wandb
 
-rr.init("f1tenth-genesis", spawn=True)
 # logging setup
 logging.basicConfig(
     level=logging.INFO,
@@ -98,6 +96,9 @@ def rollout_loop(cfg: "Config"):
                     }
                 )
 
+            if step + 1 >= n_steps and task.table_name:
+                # Construct N-Step subtrajectory if data collection task
+                replay_server.write_trajectories(task.table_name, [traj[-n_steps:] for traj in trajs])
             obs = next_obs
 
             if task.time_out_fn(step, obs):

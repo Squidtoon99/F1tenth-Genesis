@@ -46,51 +46,77 @@ WHEEL_FRICTION = 1.0
 
 
 def ackermann_left_right(
-    delta_center: float, L: float, W: float
-) -> tuple[float, float]:
+    delta_center: torch.Tensor, L: float, W: float
+) -> torch.Tensor:
     """
-    Convert a desired 'center' steering angle to left/right hinge angles.
-    delta_center in radians. Clamps internally for numerical stability.
+    Convert desired 'center' steering angles to left/right hinge angles.
+    
+    Args:
+        delta_center: (N,) tensor of center steering angles in radians
+        L: wheelbase (meters)
+        W: track width (meters)
+    
+    Returns:
+        (N, 2) tensor of [left, right] steering angles
     """
     # Near-zero steering: both wheels straight
-    if abs(delta_center) < 1e-6:
-        return 0.0, 0.0
-
-    # Turning radius of the vehicle centerline
-    # R = L / tan(delta)
-    R = L / np.tan(delta_center)
-
+    small_angle_mask = torch.abs(delta_center) < 1e-6
+    
+    # Turning radius of the vehicle centerline: R = L / tan(delta)
+    R = L / torch.tan(delta_center)
+    
     # Left/right wheel radii
     R_left = R - (W / 2.0)
     R_right = R + (W / 2.0)
-
+    
     # Wheel steering angles
-    delta_left = np.arctan(L / R_left)
-    delta_right = np.arctan(L / R_right)
-    return float(delta_left), float(delta_right)
+    delta_left = torch.atan(L / R_left)
+    delta_right = torch.atan(L / R_right)
+    
+    # Apply zero steering for near-zero angles
+    delta_left = torch.where(small_angle_mask, torch.zeros_like(delta_left), delta_left)
+    delta_right = torch.where(small_angle_mask, torch.zeros_like(delta_right), delta_right)
+    
+    return torch.stack([delta_left, delta_right], dim=1)
 
 
 def wheel_omegas_from_v(
-    delta_center: float, v: float, r: float, L: float, W: float
-) -> np.ndarray:
+    delta_center: torch.Tensor, v: torch.Tensor, r: float, L: float, W: float
+) -> torch.Tensor:
     """
     Compute per-wheel angular velocities (rad/s) for a simple Ackermann model.
-    Order: [LR, RR, LF, RF]
+    
+    Args:
+        delta_center: (N,) tensor of center steering angles in radians
+        v: (N,) tensor of vehicle speeds (m/s)
+        r: wheel radius (meters)
+        L: wheelbase (meters)
+        W: track width (meters)
+    
+    Returns:
+        (N, 4) tensor of wheel angular velocities [LR, RR, LF, RF]
     """
-    if abs(delta_center) < 1e-6:
-        omega = v / r
-        return np.array([omega, omega, omega, omega], dtype=np.float32)
-
-    R = L / np.tan(delta_center)
-
+    # Straight-line case: all wheels same speed
+    small_angle_mask = torch.abs(delta_center) < 1e-6
+    omega_straight = v / r
+    
+    # Turning case: R = L / tan(delta)
+    R = L / torch.tan(delta_center)
+    
     # Approximate left/right ground speeds based on turn radius
     v_left = v * (R - W / 2.0) / R
     v_right = v * (R + W / 2.0) / R
-
-    # Rear and front on each side share the same speed in this simple model
-    return np.array(
-        [v_left / r, v_right / r, v_left / r, v_right / r], dtype=np.float32
-    )
+    
+    # Convert to angular velocities
+    omega_left = v_left / r
+    omega_right = v_right / r
+    
+    # Apply straight-line values for near-zero angles
+    omega_left = torch.where(small_angle_mask, omega_straight, omega_left)
+    omega_right = torch.where(small_angle_mask, omega_straight, omega_right)
+    
+    # Rear and front on each side share the same speed: [LR, RR, LF, RF]
+    return torch.stack([omega_left, omega_right, omega_left, omega_right], dim=1)
 
 
 def setup_entity_controls(car) -> tuple[list[int], list[int]]:

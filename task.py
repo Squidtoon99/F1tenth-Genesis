@@ -87,7 +87,7 @@ class TaskServer:
 TASK_SPECS = [
     Task(
         launch_strategy=LaunchStrategy.uniform_jittered(
-            num_cars=500, mps_range=(0.0, 0.0)
+            num_cars=100, mps_range=(0.0, 0.0)
         ),
         random_policy=False,
         table_name="1v0",
@@ -103,7 +103,7 @@ def get_task(cfg: "Config") -> Task:
     if server.warm_up:
         return Task(
             launch_strategy=LaunchStrategy.uniform_jittered(
-                num_cars=400, mps_range=(0.5, 1.0)
+                num_cars=20, mps_range=(0.5, 1.0)
             ),
             random_policy=True,
             table_name="1v0",

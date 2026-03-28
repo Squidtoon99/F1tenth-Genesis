@@ -33,7 +33,7 @@ class RedisWrapper:
 
 DEFAULT_CONFIG = {
     "obs": {
-        "num_obs": 370,
+        "num_obs": 368,
         "obs_scales": {
             "lin_vel": 1.0,
             "ang_vel": 1.0,
@@ -46,6 +46,9 @@ DEFAULT_CONFIG = {
     "env": {
         "num_actions": 2,
         "episode_length": 25.0,
+        "control_interval": 10,
+        "sim_dt": 0.01,
+        "sim_substeps": 8,
         "clip_actions": 1.0,
         "simulate_action_latency": True,
         "term_oob_margin_m": 0.15,
@@ -65,12 +68,12 @@ DEFAULT_CONFIG = {
             "left_rear_wheel_joint": 0.0,
             "right_rear_wheel_joint": 0.0,
         },
-        "max_speed": 7.0,  # m/s
-        "max_steer": 0.4189,  # radianss
+        "max_speed": 10.0,  # m/s
+        "max_steer": 0.4189,  # radians
         "wheelbase": 0.325,
         "track_width": 0.20,
         "wheel_radius": 0.05,
-        "track": "Montreal",
+        "track": "SaoPaulo",
     },
     "reward": {
         "progress_k_fwd": 5.0,
@@ -79,8 +82,8 @@ DEFAULT_CONFIG = {
         "oob_margin_m": 0.5,
         "oob_k": 10.0,
         "reward_scales": {
-            "progress": 1.4,
-            "oob_penalty": 1.0,
+            "progress": 14.0,
+            "oob_penalty": 10.0,
         },
     },
     "model": {

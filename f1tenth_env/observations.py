@@ -47,6 +47,12 @@ def obs_centerline_angle(
     return out
 
 
+def obs_centerline_distance(
+    step_state: dict[str, Any],
+) -> torch.Tensor:
+    return step_state["boundary"]["ey"].unsqueeze(-1)
+
+
 def obs_contact_flag(
     step_state: dict[str, Any], obs_cfg: dict[str, Any]
 ) -> torch.Tensor:
@@ -154,10 +160,11 @@ def build_observation(
 ) -> torch.Tensor:
     obs = torch.concatenate(
         (
-            base_lin_vel[:2],
-            base_ang_vel[:2],
+            base_lin_vel[:, :2],
+            base_ang_vel[:, 2:3],
             obs_track_progress(centerline, base_pos, device),
             obs_centerline_angle(step_state, base_quat),
+            obs_centerline_distance(step_state),
             obs_contact_flag(step_state, obs_cfg),
             obs_future_track_points(
                 centerline,

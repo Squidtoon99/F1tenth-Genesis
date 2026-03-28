@@ -3,6 +3,7 @@ import os
 from typing import Any
 
 import genesis as gs
+import genesis.utils.geom as gu
 import numpy as np
 import torch
 
@@ -31,7 +32,6 @@ from .utils import (
     invalidate_step_caches,
     load_track_state,
 )
-from .validators import validate_observation_ranges, validate_reward_ranges
 
 
 class F1tenthEnv:
@@ -54,8 +54,10 @@ class F1tenthEnv:
         self.show_viewer = show_viewer
 
         self.device = gs.device if gs.device is not None else torch.device("cpu")
-        self.simulate_action_latency = self.env_cfg.get("simulate_action_latency", True)
-        self.dt = 0.01
+        self.simulate_action_latency = self.env_cfg.get(
+            "simulate_action_latency", False
+        )
+        self.dt = self.env_cfg.get("sim_dt", 0.01)
         self.max_episode_steps = math.ceil(self.env_cfg["episode_length"] / self.dt)
 
         self.spawn_strategy = self.env_cfg.get("launch_strategy", "uniform_jittered")
@@ -83,7 +85,9 @@ class F1tenthEnv:
                 max_FPS=int(1.0 / self.dt),
             ),
             rigid_options=gs.options.RigidOptions(enable_self_collision=False),
-            sim_options=gs.options.SimOptions(dt=self.dt, substeps=2),
+            sim_options=gs.options.SimOptions(
+                dt=self.dt, substeps=self.env_cfg.get("sim_substeps", 4)
+            ),
             show_viewer=show_viewer,
         )
 
@@ -101,6 +105,8 @@ class F1tenthEnv:
             self.cam1 = self.scene.add_camera(
                 res=(1024, 1024), pos=(2, 0, 1), lookat=(0, 0, 0.5), debug=True
             )
+        else:
+            self.cam1 = None
         self.scene.build(n_envs=num_envs)
         if self.show_viewer:
             draw_track_boundaries_debug(
@@ -296,7 +302,7 @@ class F1tenthEnv:
                 car.set_pos(pos, envs_idx=env_ids)
                 car.set_quat(quat, envs_idx=env_ids, zero_velocity=True, relative=False)
 
-        return None  # self._apply_reset_speed(env_ids)
+        return self._apply_reset_speed(env_ids)
 
     def _apply_reset_speed(self, env_ids: torch.Tensor) -> torch.Tensor | None:
         n = int(env_ids.numel())
@@ -346,8 +352,9 @@ class F1tenthEnv:
         car = self.car  # type: Any
         self.base_pos = car.get_pos()
         self.base_quat = car.get_quat()
-        self.base_lin_vel = car.get_vel()
-        self.base_ang_vel = car.get_ang()
+
+        self.base_lin_vel = gu.inv_transform_by_quat(car.get_vel(), car.get_quat())
+        self.base_ang_vel = gu.inv_transform_by_quat(car.get_ang(), car.get_quat())
 
         invalidate_step_caches(self.track_state)
         self._step_state_valid = False
@@ -431,7 +438,7 @@ class F1tenthEnv:
             return self.obs_buf, self.extras
 
         env_ids = self._mask_to_env_ids(envs_idx)
-        _ = self._apply_root_reset(env_ids)
+        reset_speed_mps = self._apply_root_reset(env_ids)
         self.scene.step()
 
         self.base_lin_vel.masked_fill_(envs_idx[:, None], 0.0)
@@ -439,16 +446,16 @@ class F1tenthEnv:
         self.actions.masked_fill_(envs_idx[:, None], 0.0)
         self.last_actions.masked_fill_(envs_idx[:, None], 0.0)
         self.wheel_omega_cmd.masked_fill_(envs_idx[:, None], 0.0)
-        # if reset_speed_mps is not None:
-        #     max_speed = max(float(self.env_cfg.get("max_speed", 5.0)), 1e-6)
-        #     clip_actions = float(self.env_cfg.get("clip_actions", 1.0))
-        #     reset_throttle = torch.clamp(
-        #         reset_speed_mps / max_speed,
-        #         min=-clip_actions,
-        #         max=clip_actions,
-        #     )
-        #     self.actions[env_ids, 0] = reset_throttle
-        #     self.last_actions[env_ids, 0] = reset_throttle
+        if reset_speed_mps is not None:
+            max_speed = max(float(self.env_cfg.get("max_speed", 5.0)), 1e-6)
+            clip_actions = float(self.env_cfg.get("clip_actions", 1.0))
+            reset_throttle = torch.clamp(
+                reset_speed_mps / max_speed,
+                min=-clip_actions,
+                max=clip_actions,
+            )
+            self.actions[env_ids, 0] = reset_throttle
+            self.last_actions[env_ids, 0] = reset_throttle
         self.episode_steps_buf.masked_fill_(envs_idx, 0)
         self.lap_count_buf.masked_fill_(envs_idx, 0)
         self.reset_buf.masked_fill_(envs_idx, False)
@@ -468,43 +475,80 @@ class F1tenthEnv:
         )
 
         self._update_observation()
-        validate_observation_ranges(self.obs_buf)
         self.extras["observations"]["critic"] = self.obs_buf
         return self.obs_buf, self.extras
 
-    def _apply_actions(self, exec_actions: torch.Tensor):
-        throttle = exec_actions[:, 0].detach().cpu().numpy()
-        steer = exec_actions[:, 1].detach().cpu().numpy()
+    def _apply_actions(self, exec_actions: torch.Tensor, env_ids: torch.Tensor = None):
+        """
+        Apply actions to the vehicles in a parallelized manner.
 
-        steer_targets = np.zeros(
-            (self.num_envs, len(self.steer_dofs)), dtype=np.float32
+        Args:
+            exec_actions: (N, 2) tensor of [throttle, steering] actions
+            env_ids: optional tensor of environment indices to apply actions to.
+                     If None, applies to all environments.
+        """
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+
+        throttle_cmd = exec_actions[:, 0]
+        steer = exec_actions[:, 1]
+
+        # Separate throttle (positive) and brake (negative)
+        throttle = torch.where(
+            throttle_cmd > 1e-3, throttle_cmd, torch.zeros_like(throttle_cmd)
         )
-        wheel_omegas = np.zeros((self.num_envs, len(self.wheel_dofs)), dtype=np.float32)
+        brake = torch.clamp(-throttle_cmd, min=0.0)
 
-        for i in range(self.num_envs):
-            left, right = ackermann_left_right(
-                delta_center=float(steer[i]) * self.env_cfg.get("max_steer", 0.35),
-                L=self.env_cfg.get("wheelbase", 0.325),
-                W=self.env_cfg.get("track_width", 0.20),
-            )
-            steer_targets[i] = np.array([left, right], dtype=np.float32)
-            wheel_omegas[i] = wheel_omegas_from_v(
-                delta_center=float(steer[i]) * self.env_cfg.get("max_steer", 0.35),
-                v=float(throttle[i]) * self.env_cfg.get("max_speed", 10.0),
-                r=self.env_cfg.get("wheel_radius", 0.05),
-                L=self.env_cfg.get("wheelbase", 0.325),
-                W=self.env_cfg.get("track_width", 0.20),
-            )
+        # Compute steering angles in batch (parallelized)
+        delta_center = steer * self.env_cfg.get("max_steer", 0.35)
+        steer_targets = ackermann_left_right(
+            delta_center=delta_center,
+            L=self.env_cfg.get("wheelbase", 0.325),
+            W=self.env_cfg.get("track_width", 0.20),
+        )
 
+        # Compute wheel velocities in batch (parallelized)
+        wheel_omegas = wheel_omegas_from_v(
+            delta_center=delta_center,
+            v=throttle * self.env_cfg.get("max_speed", 10.0),
+            r=self.env_cfg.get("wheel_radius", 0.05),
+            L=self.env_cfg.get("wheelbase", 0.325),
+            W=self.env_cfg.get("track_width", 0.20),
+        )
+
+        # Compute brake torque
+        brake_torque = -brake.unsqueeze(1) * self.env_cfg.get("max_brake_torque", 1.0)
+        brake_torque = brake_torque.expand(-1, len(self.wheel_dofs))
+
+        # Apply controls only to specified environment indices
         car = self.car  # type: Any
-        car.control_dofs_velocity(
-            torch.from_numpy(wheel_omegas).to(device=gs.device), self.wheel_dofs
-        )
+
+        # Only apply wheel velocity control to environments with non-zero throttle
+        throttle_mask = throttle > 1e-3
+        if throttle_mask.any():
+            throttle_env_ids = env_ids[throttle_mask]
+            car.control_dofs_velocity(
+                wheel_omegas[throttle_mask].to(device=gs.device),
+                self.wheel_dofs,
+                envs_idx=throttle_env_ids,
+            )
+
+        # Only apply brake torque to environments with non-zero brake
+        brake_mask = brake > 1e-3
+        if brake_mask.any():
+            brake_env_ids = env_ids[brake_mask]
+            car.control_dofs_torque(
+                brake_torque[brake_mask].to(device=gs.device),
+                self.wheel_dofs,
+                envs_idx=brake_env_ids,
+            )
+
+        # Apply steering to all specified environments
         car.control_dofs_position(
-            torch.from_numpy(steer_targets).to(device=gs.device), self.steer_dofs
+            steer_targets.to(device=gs.device), self.steer_dofs, envs_idx=env_ids
         )
 
-    def step(self, actions):
+    def step(self, actions, n_steps=1):
         self.actions = torch.clip(
             actions,
             -self.env_cfg["clip_actions"],
@@ -515,12 +559,19 @@ class F1tenthEnv:
         )
 
         self._apply_actions(exec_actions)
-        self.scene.step()
+        for _ in range(n_steps):
+            self.scene.step()
+            if self.cam1 is not None:
+                position = self.car.get_pos(envs_idx=[0])[0]
+
+                self.cam1.set_pose(
+                    lookat=position.cpu() + np.array([0.0, 0.0, 0.5]),
+                    pos=position.cpu() + np.array([2.0, 0.0, 4.0]),
+                )
         self.episode_steps_buf += 1
         self._update_state_buffers()
 
         self._compute_rewards()
-        validate_reward_ranges(self.reward_buf, self.reward_state["last_reward_terms"])
         self._compute_terminations()
 
         done = self.reset_buf.clone()
@@ -528,7 +579,6 @@ class F1tenthEnv:
             self.reset(done)
         else:
             self._update_observation()
-            validate_observation_ranges(self.obs_buf)
             self.extras["observations"]["critic"] = self.obs_buf
 
         self.last_actions.copy_(self.actions)

@@ -16,3 +16,4 @@ class QuantileCritic(nn.Module):
     def forward(self, obs, act):
         x = torch.cat([obs, act], dim=-1)
         return self.head(self.backbone(x))  # (B, 32)
+ 
