@@ -158,18 +158,18 @@ def compute_rewards(
     reward_buf = torch.zeros((num_envs,), dtype=gs.tc_float, device=device)
     last_terms: dict[str, torch.Tensor] = {}
 
-    for name, scale in reward_state["reward_scales"].items():
-        if name == "progress":
-            term = reward_progress(step_state, reward_cfg)
-        elif name == "oob_penalty":
-            term = reward_oob_penalty(step_state, reward_cfg)
-        else:
-            raise ValueError(f"Unknown reward term requested in reward_scales: {name}")
+    progress = reward_progress(step_state, reward_cfg)
+    oob_penalty = reward_oob_penalty(step_state, reward_cfg)
 
-        rew = term * scale
-        reward_buf += rew
-        reward_state["episode_sums"][name] += rew
-        last_terms[name] = rew
+    progress = torch.where(
+        oob_penalty.unsqueeze(1) < 0.0, torch.zeros_like(progress), progress
+    )
 
+    last_terms = {"progress": progress.clone(), "oob_penalty": oob_penalty.clone()}
+
+    reward_buf += (
+        reward_state["reward_scales"]["progress"] * progress.item()
+        + reward_state["reward_scales"]["oob_penalty"] * oob_penalty.item()
+    )
     reward_state["last_reward_terms"] = last_terms
     return reward_buf, step_state

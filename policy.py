@@ -34,8 +34,8 @@ class UniformRandomPolicy(PolicyBase):
         if observation.ndim != 2:
             raise ValueError("Observation batch must be rank-2 [batch, obs_dim]")
         return torch.tensor(
-            [0.5, 0.0], dtype=observation.dtype, device=observation.device
-        ) + 0.5 * (
+            [0.0, 0.0], dtype=observation.dtype, device=observation.device
+        ) + 1.0 * (
             2.0
             * torch.rand(
                 (observation.shape[0], self.action_dim),

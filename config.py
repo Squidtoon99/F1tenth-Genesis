@@ -82,7 +82,7 @@ DEFAULT_CONFIG = {
         "oob_margin_m": 0.5,
         "oob_k": 10.0,
         "reward_scales": {
-            "progress": 14.0,
+            "progress": 140.0,
             "oob_penalty": 10.0,
         },
     },

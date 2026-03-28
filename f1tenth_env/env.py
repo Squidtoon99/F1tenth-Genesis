@@ -32,7 +32,7 @@ from .utils import (
     invalidate_step_caches,
     load_track_state,
 )
-
+import rerun as rr
 
 class F1tenthEnv:
 
@@ -43,6 +43,7 @@ class F1tenthEnv:
         obs_cfg,
         reward_cfg,
         show_viewer=False,
+        enable_recording=False,
     ):
         self.num_actions = env_cfg["num_actions"]
         self.num_obs = obs_cfg["num_obs"]
@@ -102,13 +103,15 @@ class F1tenthEnv:
 
         if self.scene.viewer and show_viewer:
             self.scene.viewer.follow_entity(self.car)
+        
+        if enable_recording:
             self.cam1 = self.scene.add_camera(
                 res=(1024, 1024), pos=(2, 0, 1), lookat=(0, 0, 0.5), debug=True
             )
         else:
             self.cam1 = None
         self.scene.build(n_envs=num_envs)
-        if self.show_viewer:
+        if self.show_viewer or enable_recording:
             draw_track_boundaries_debug(
                 scene=self.scene,
                 centerline=self.centerline,
@@ -478,7 +481,9 @@ class F1tenthEnv:
         self.extras["observations"]["critic"] = self.obs_buf
         return self.obs_buf, self.extras
 
-    def _apply_actions(self, exec_actions: torch.Tensor, env_ids: torch.Tensor = None):
+    def _apply_actions(
+        self, exec_actions: torch.Tensor, env_ids: torch.Tensor | None = None
+    ):
         """
         Apply actions to the vehicles in a parallelized manner.
 
@@ -537,7 +542,7 @@ class F1tenthEnv:
         brake_mask = brake > 1e-3
         if brake_mask.any():
             brake_env_ids = env_ids[brake_mask]
-            car.control_dofs_torque(
+            car.control_dofs_force(
                 brake_torque[brake_mask].to(device=gs.device),
                 self.wheel_dofs,
                 envs_idx=brake_env_ids,
@@ -568,6 +573,8 @@ class F1tenthEnv:
                     lookat=position.cpu() + np.array([0.0, 0.0, 0.5]),
                     pos=position.cpu() + np.array([2.0, 0.0, 4.0]),
                 )
+                rgb, *_ = self.cam1.render()
+                rr.log("image", rr.Image(rgb))
         self.episode_steps_buf += 1
         self._update_state_buffers()
 

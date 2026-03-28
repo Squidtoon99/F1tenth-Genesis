@@ -226,7 +226,7 @@ def process_eval_data(cfg: "Config", task: Any, extras: Any, traj: list) -> dict
 
 
 def rollout_loop(cfg: "Config"):
-    max_steps = int(os.getenv("COLLECTOR_STEPS", "500"))
+    max_steps = int(os.getenv("COLLECTOR_STEPS", "100"))
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(os.getenv("ROLLOUT_DIR", "outputs/random_rollouts")) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -271,7 +271,8 @@ def rollout_loop(cfg: "Config"):
             num_envs=num_envs,
             obs_cfg=cfg.obs,
             reward_cfg=cfg.reward,
-            show_viewer=True,
+            show_viewer=False,
+            enable_recording=True
         )
 
         obs, _ = env.reset()
