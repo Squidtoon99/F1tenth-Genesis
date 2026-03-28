@@ -118,8 +118,8 @@ def _log_observation_fields(agent_path: str, obs: torch.Tensor) -> None:
         rr.Arrows2D(vectors=[(-lin_vel[:2]).numpy()]),
     )
     rr.log(
-        f"{agent_path}/obs/angular_velocity",
-        rr.Arrows2D(vectors=[(ang_vel[:2]).numpy()]),
+        f"{agent_path}/obs/yaw_rate",
+        rr.Scalars(float(-ang_vel[0].item())),
     )
     rr.log(
         f"{agent_path}/obs/track_progress_cos",
@@ -228,98 +228,79 @@ def process_eval_data(cfg: "Config", task: Any, extras: Any, traj: list) -> dict
 def rollout_loop(cfg: "Config"):
     max_steps = int(os.getenv("COLLECTOR_STEPS", "100"))
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(os.getenv("ROLLOUT_DIR", "outputs/random_rollouts")) / run_id
+    output_dir = Path(os.getenv("ROLLOUT_DIR", "outputs/testing")) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    replay_server = ReplayServer(cfg)
+    # Handling task selection
+    task = Task(
+        launch_strategy=LaunchStrategy.uniform_jittered(
+            num_cars=2,
+            mps_range=(0.0, 1.0),
+        ),
+        random_policy=False,
+        table_name=None,
+        time_out_fn=lambda step, obs: step >= max_steps - 1,
+        is_eval=True,
+    )
 
-    episode = 0
-    while True:
-
-        # Handling task selection
-        task = Task(
-            launch_strategy=LaunchStrategy.uniform_jittered(
-                num_cars=2,
-                mps_range=(0.0, 1.0),
-            ),
-            random_policy=True,
-            table_name=None,
-            time_out_fn=lambda step, obs: step >= max_steps - 1,
-            is_eval=True,
+    if task.random_policy:
+        agent_policy = UniformRandomPolicy(
+            action_dim=cfg.env["num_actions"],
+            action_clip=cfg.env["clip_actions"],
         )
-
-        if task.random_policy:
-            agent_policy = UniformRandomPolicy(
-                action_dim=cfg.env["num_actions"],
-                action_clip=cfg.env["clip_actions"],
-            )
-        else:
-            agent_policy = Policy(
-                cfg=cfg,
-                action_dim=cfg.env["num_actions"],
-                action_clip=cfg.env["clip_actions"],
-            )
-            agent_policy.maybe_refresh(force=True)
-
-        num_envs = int(task.launch_strategy.data.get("num_cars", 20))
-        env = F1tenthEnv(
-            env_cfg={
-                "launch_strategy": task.launch_strategy.type,
-                "launch_strategy_data": task.launch_strategy.data,
-                **cfg.env,
-            },
-            num_envs=num_envs,
-            obs_cfg=cfg.obs,
-            reward_cfg=cfg.reward,
-            show_viewer=False,
-            enable_recording=True
+    else:
+        agent_policy = Policy(
+            cfg=cfg,
+            action_dim=cfg.env["num_actions"],
+            action_clip=cfg.env["clip_actions"],
         )
+        agent_policy.maybe_refresh(force=True)
 
-        obs, _ = env.reset()
-        extras = []
+    num_envs = int(task.launch_strategy.data.get("num_cars", 20))
+    env = F1tenthEnv(
+        env_cfg={
+            "launch_strategy": task.launch_strategy.type,
+            "launch_strategy_data": task.launch_strategy.data,
+            **cfg.env,
+        },
+        num_envs=num_envs,
+        obs_cfg=cfg.obs,
+        reward_cfg=cfg.reward,
+        show_viewer=False,
+        enable_recording=True,
+    )
 
-        for step in range(max_steps):
-            # actions = agent_policy.get_actions(obs, exploit=task.is_eval)
+    obs, _ = env.reset()
+    extras = []
 
-            if step <= 20:
-                actions = torch.zeros(
-                    (num_envs, cfg.env["num_actions"]), device=obs.device
-                )
-            elif step <= 40:
-                actions = torch.tensor(
-                    [[0.5, 0.0] for _ in range(num_envs)], device=obs.device
-                )
-            else:
-                actions = torch.tensor(
-                    [[-1.0, 0.0] for _ in range(num_envs)], device=obs.device
-                )
+    for step in range(max_steps):
+        actions = agent_policy.get_actions(obs, exploit=task.is_eval)
 
-            next_obs, reward, done, extra = env.step(
-                actions, n_steps=cfg.env.get("control_interval", 10)
+        next_obs, reward, done, extra = env.step(
+            actions, n_steps=cfg.env.get("control_interval", 10)
+        )
+        for agent_id in range(num_envs):
+            agent_done = bool(done[agent_id].item())
+            _log_agent_step(
+                agent_id=agent_id,
+                step=step,
+                episode=1,
+                obs=obs,
+                action=actions,
+                reward=reward,
+                done=done,
+                extra=extra,
+                num_envs=num_envs,
             )
-            for agent_id in range(num_envs):
-                agent_done = bool(done[agent_id].item())
-                _log_agent_step(
-                    agent_id=agent_id,
-                    step=step,
-                    episode=episode,
-                    obs=obs,
-                    action=actions,
-                    reward=reward,
-                    done=done,
-                    extra=extra,
-                    num_envs=num_envs,
-                )
-            obs = next_obs
+        obs = next_obs
 
-        logging.info(f"Task finished after {step+1} steps. Resetting environment...")
+    logging.info(f"Task finished after {step+1} steps. Resetting environment...")
+    if env.cam1 is not None:
         env.cam1.stop_recording(
-            save_to_filename=output_dir / f"episode_{episode}.mp4", fps=60
+            save_to_filename=output_dir / f"episode_{1}.mp4", fps=60
         )
-        env.close()
-        episode += 1
+    env.close()
 
-        break
 def main():
     logging.info("Initializing Genesis and setting up the scene...")
     rr.init("f1tenth-genesis", spawn=True)
