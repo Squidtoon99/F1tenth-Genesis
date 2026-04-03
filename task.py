@@ -87,7 +87,7 @@ class TaskServer:
 TASK_SPECS = [
     Task(
         launch_strategy=LaunchStrategy.uniform_jittered(
-            num_cars=30, mps_range=(0.0, 0.0)
+            num_cars=50, mps_range=(0.0, 0.0)
         ),
         random_policy=False,
         table_name="1v0",

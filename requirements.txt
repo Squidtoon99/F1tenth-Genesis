@@ -7,3 +7,6 @@ pandas
 boto3
 botocore
 python-dotenv
+sqlalchemy
+psycopg2
+random_word

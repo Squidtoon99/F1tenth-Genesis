@@ -45,6 +45,13 @@ class UniformRandomPolicy(PolicyBase):
             - 1.0
         )
 
+    @property
+    def policy(self):
+        return {
+            "loaded": True,
+            "version": "uniform_random",
+        }
+
 
 class Policy(PolicyBase):
 

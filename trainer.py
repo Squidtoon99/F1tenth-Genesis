@@ -126,7 +126,8 @@ def train_loop(cfg: "Config"):
                 )
                 task_server.warm_up = False
 
-                task_server.needs_eval = True
+                if current_version <= 5 or current_version % 5 == 0:
+                    task_server.needs_eval = True
                 logging.info("Signaled workers to run evaluation episodes.")
     except KeyboardInterrupt:
         pass
@@ -134,5 +135,5 @@ def train_loop(cfg: "Config"):
 
 
 if __name__ == "__main__":
-    cfg = Config(session_id="0", redis_uri="redis://localhost:6379")
+    cfg = Config(session_id="1")
     train_loop(cfg)

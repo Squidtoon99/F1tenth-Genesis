@@ -1,9 +1,12 @@
 import json
 import logging
 import os
+
 from dotenv import load_dotenv
 from redis import Redis
 from functools import wraps
+
+from db import bootstrap_database
 from param import S3ParameterServer
 import wandb
 
@@ -33,7 +36,7 @@ class RedisWrapper:
 
 DEFAULT_CONFIG = {
     "obs": {
-        "num_obs": 368,
+        "num_obs": 370,
         "obs_scales": {
             "lin_vel": 1.0,
             "ang_vel": 1.0,
@@ -82,8 +85,9 @@ DEFAULT_CONFIG = {
         "oob_margin_m": 0.5,
         "oob_k": 10.0,
         "reward_scales": {
-            "progress": 2.0,
+            "progress": 3.4,
             "oob_penalty": 1.2,
+            "tyre_slip_penalty": 0.0,
         },
     },
     "model": {
@@ -102,10 +106,18 @@ DEFAULT_CONFIG = {
 class Config:
     """Configuration class for the application."""
 
-    def __init__(self, session_id: str, redis_uri: str | None):
+    def __init__(
+        self,
+        session_id: str,
+        bootstrap_db: bool = True,
+    ):
         load_dotenv()
         self.session_id = session_id
-        self.redis_uri = redis_uri or "redis://localhost:6379/0"
+
+        # Redis Config
+
+        self.redis_uri = os.getenv("REDIS_URI") or "redis://localhost:6379/0"
+
         self._redis_client = Redis.from_url(self.redis_uri, decode_responses=True)
         self._redis_binary_client = Redis.from_url(
             self.redis_uri, decode_responses=False
@@ -113,6 +125,24 @@ class Config:
         self.redis = RedisWrapper(self._redis_client, self.session_id)
         self.redis_b = RedisWrapper(self._redis_binary_client, self.session_id)
         self.logger = logging.getLogger("Genesis")
+
+        # Postgres
+        self.db_engine = None 
+        self.db_session_factory = None
+        if database_url := os.getenv("POSTGRES_URI"):
+            self.db_engine = None
+            self.db_session_factory = None
+
+            if bootstrap_db:
+                try:
+                    self.db_engine, self.db_session_factory = bootstrap_database(
+                        database_url=database_url
+                    )
+                    self.logger.info("Database bootstrap completed successfully.")
+                except Exception as exc:
+                    self.logger.exception(f"Database bootstrap failed: {exc}")
+
+        
         self._cfg = DEFAULT_CONFIG.copy()
         # Load redis overrides
 
@@ -162,3 +192,11 @@ class Config:
 
     def dict(self):
         return self._cfg
+
+    def db_session(self):
+        if self.db_session_factory is None:
+            raise RuntimeError(
+                "Database session factory is not initialized. "
+                "Check database URL/configuration or enable bootstrap_db."
+            )
+        return self.db_session_factory()

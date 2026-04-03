@@ -30,7 +30,7 @@ class ReplayServer:
 
         obs = trajectory[0]["obs"]
         action = trajectory[0]["action"]
-        next_obs = trajectory[i]["next_obs"]
+        next_obs = trajectory[i]["next_obs"] # type: ignore
         return obs, action, R, next_obs, done
 
     @staticmethod

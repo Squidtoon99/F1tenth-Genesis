@@ -1,9 +1,8 @@
 from typing import Any
 
 import torch
-
 import genesis as gs
-
+import genesis.utils.geom as gu
 from .utils import compute_oob_from_boundary_state
 
 
@@ -136,6 +135,62 @@ def reward_oob_penalty(
     return -k_oob * oob_dist
 
 
+def reward_tyre_slip_penalty(
+    step_state: dict[str, Any],
+    reward_cfg: dict[str, Any],
+) -> torch.Tensor:
+    """
+    Minimal MVP tyre-slip penalty (no step_state, no extra structure).
+
+    Conventions:
+    - wheel order is [left_rear, right_rear, left_front, right_front]
+    - motion velocity is sampled at wheel links
+    - local frame is non-spinning: base for rear, steering hinges for front
+    """
+
+    wheel_state = step_state["wheel_state"]
+    # --- pull state ---
+    wheel_lin_vel_world = wheel_state["motion_link_vel"]  # (N, 4, 3)
+    wheel_frame_quat_world = wheel_state["frame_quat"]  # (N, 4, 4)
+    spin_rate = wheel_state["dof_vel"]  # (N, n_dofs)
+
+    # --- world -> non-spinning local slip frame ---
+    lin_vel_local = gu.inv_transform_by_quat(
+        wheel_lin_vel_world, wheel_frame_quat_world
+    )
+
+    v_fwd = lin_vel_local[:, :, 0]
+    v_lat = lin_vel_local[:, :, 1]
+
+    # Optional sign overrides in case URDF axis conventions are inverted.
+    front_sign = float(reward_cfg.get("slip_forward_sign_front", 1.0))
+    rear_sign = float(reward_cfg.get("slip_forward_sign_rear", 1.0))
+    v_fwd = v_fwd.clone()
+    v_fwd[:, :2] = rear_sign * v_fwd[:, :2]
+    v_fwd[:, 2:] = front_sign * v_fwd[:, 2:]
+
+    # --- slip calculations ---
+    eps = float(reward_cfg.get("slip_eps", 0.1))
+    wheel_radius = float(reward_cfg.get("wheel_radius_m", 0.05))
+
+    slip_angle = torch.atan2(v_lat, torch.abs(v_fwd).clamp_min(eps))
+
+    wheel_speed = wheel_radius * spin_rate
+    denom = torch.maximum(torch.abs(wheel_speed), torch.abs(v_fwd)).clamp_min(eps)
+    slip_ratio = (wheel_speed - v_fwd) / denom
+
+    # --- Sophy-style penalty ---
+    slip_angle_mag = torch.abs(slip_angle)
+    slip_ratio_mag = torch.clamp(torch.abs(slip_ratio), max=1.0)
+
+    per_wheel = slip_ratio_mag * slip_angle_mag
+    penalty = -torch.sum(per_wheel, dim=1)
+
+    penalty = torch.where(penalty > -1.0, torch.zeros_like(penalty), penalty)
+
+    return penalty
+
+
 def compute_rewards(
     step_state: dict[str, Any],
     reward_cfg: dict[str, Any],
@@ -154,19 +209,22 @@ def compute_rewards(
     num_envs = episode_steps_buf.shape[0]
     device = episode_steps_buf.device
     reward_buf = torch.zeros((num_envs,), dtype=gs.tc_float, device=device)
-    last_terms: dict[str, torch.Tensor] = {}
 
     progress = reward_progress(step_state, reward_cfg)
     oob_penalty = reward_oob_penalty(step_state, reward_cfg)
-
+    tyre_slip_penalty = reward_tyre_slip_penalty(step_state, reward_cfg)
     progress = torch.where(oob_penalty < 0.0, torch.zeros_like(progress), progress)
 
     progress *= reward_cfg["reward_scales"]["progress"]
     oob_penalty *= reward_cfg["reward_scales"]["oob_penalty"]
+    tyre_slip_penalty *= reward_cfg["reward_scales"]["tyre_slip_penalty"]
+    last_terms: dict[str, torch.Tensor] = {
+        "progress": progress.clone(),
+        "oob_penalty": oob_penalty.clone(),
+        "tyre_slip_penalty": tyre_slip_penalty.clone(),
+    }
 
-    last_terms = {"progress": progress.clone(), "oob_penalty": oob_penalty.clone()}
+    reward_buf += progress + oob_penalty + tyre_slip_penalty
 
-    # Add to also check that reward shapes are correct and compatible with reward_buf
-    reward_buf += progress + oob_penalty
     reward_state["last_reward_terms"] = last_terms
     return reward_buf, step_state

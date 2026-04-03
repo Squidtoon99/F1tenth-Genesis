@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import torch
 from config import Config
+from eval_worker import process_eval_data
 from policy import Policy, UniformRandomPolicy
 from replay import ReplayServer
 from task import LaunchStrategy, Task, get_task
@@ -107,11 +108,12 @@ def _log_observation_fields(agent_path: str, obs: torch.Tensor) -> None:
 
     lin_vel = obs_cpu[0:2]
     ang_vel = obs_cpu[2:3]
-    track_progress = obs_cpu[3:5]
-    centerline_angle = obs_cpu[5]
-    centerline_distance = obs_cpu[6]
-    wall_contact_flag = obs_cpu[7]
-    future_pts_flat = obs_cpu[8:]
+    _last_action = obs_cpu[3:5]
+    track_progress = obs_cpu[5:7]
+    centerline_angle = obs_cpu[7]
+    centerline_distance = obs_cpu[8]
+    wall_contact_flag = obs_cpu[9]
+    future_pts_flat = obs_cpu[10:]
 
     rr.log(
         f"{agent_path}/obs/linear_velocity",
@@ -203,30 +205,8 @@ def _log_agent_step(
         )
 
 
-def process_eval_data(cfg: "Config", task: Any, extras: Any, traj: list) -> dict:
-    data = {}
-    # Lap timing
-    lap_times = []
-    current_lap_time = 0.0
-    current_lap = 0
-    for extra, step in zip(extras, traj):
-        current_lap_time += 0.1  # sim dt (hardcoded)
-        if extra.get("lap_complete"):
-            lap_times.append(current_lap_time)
-            current_lap_time = 0.0
-            current_lap += 1
-
-    data["lap_times"] = lap_times
-    data["mean_lap_time"] = np.mean(lap_times) if lap_times else None
-    logging.info(f"Eval completed. Lap times: {lap_times}")
-
-    # Average Reward
-    data["average_reward"] = np.mean([step["reward"] for step in traj])
-    return data
-
-
 def rollout_loop(cfg: "Config"):
-    max_steps = int(os.getenv("COLLECTOR_STEPS", "100"))
+    max_steps = int(os.getenv("COLLECTOR_STEPS", "500"))
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(os.getenv("ROLLOUT_DIR", "outputs/testing")) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -266,13 +246,14 @@ def rollout_loop(cfg: "Config"):
         num_envs=num_envs,
         obs_cfg=cfg.obs,
         reward_cfg=cfg.reward,
-        show_viewer=False,
+        show_viewer=True,
         enable_recording=True,
     )
 
     obs, _ = env.reset()
     extras = []
-
+    trajs = [[] for _ in range(num_envs)]  # list of trajectories for each agent
+    step = 0
     for step in range(max_steps):
         actions = agent_policy.get_actions(obs, exploit=task.is_eval)
 
@@ -292,6 +273,16 @@ def rollout_loop(cfg: "Config"):
                 extra=extra,
                 num_envs=num_envs,
             )
+            
+            trajs[agent_id].append(
+                {
+                    "obs": obs[agent_id].detach().cpu(),
+                    "action": actions[agent_id].detach().cpu(),
+                    "reward": reward[agent_id].item(),
+                    "next_obs": next_obs[agent_id].detach().cpu(),
+                    "done": agent_done,
+                }
+            )
         obs = next_obs
 
     logging.info(f"Task finished after {step+1} steps. Resetting environment...")
@@ -299,6 +290,9 @@ def rollout_loop(cfg: "Config"):
         env.cam1.stop_recording(
             save_to_filename=output_dir / f"episode_{1}.mp4", fps=60
         )
+
+    if task.is_eval:
+        process_eval_data(cfg, task, extras, trajs[0])
     env.close()
 
 def main():
@@ -307,7 +301,7 @@ def main():
     gs.init()
 
     session_id = os.getenv("SESSION_ID", "0")
-    cfg = Config(session_id=session_id, redis_uri=os.getenv("REDIS_URI"))
+    cfg = Config(session_id=session_id, bootstrap_db=False)
     rollout_loop(cfg)
 
 

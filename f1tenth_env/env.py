@@ -79,7 +79,7 @@ class F1tenthEnv:
 
         self.scene = gs.Scene(
             viewer_options=gs.options.ViewerOptions(
-                camera_pos=(0.0, -2.5, 1.5),
+                camera_pos=(0.0, -5.0, 3.5),
                 camera_lookat=(0.4, 0.0, 0.2),
                 camera_fov=35,
                 res=(960, 640),
@@ -87,7 +87,7 @@ class F1tenthEnv:
             ),
             rigid_options=gs.options.RigidOptions(enable_self_collision=False),
             sim_options=gs.options.SimOptions(
-                dt=self.dt, substeps=self.env_cfg.get("sim_substeps", 4)
+                dt=self.dt, substeps=self.env_cfg.get("sim_substeps", 8)
             ),
             show_viewer=show_viewer,
         )
@@ -123,7 +123,18 @@ class F1tenthEnv:
             self.cam1.start_recording()
 
         self.wheel_dofs, self.steer_dofs = setup_entity_controls(self.car)
-
+        self.slip_motion_link_idx = [
+            self.car.get_link("left_rear_wheel").idx_local,
+            self.car.get_link("right_rear_wheel").idx_local,
+            self.car.get_link("left_front_wheel").idx_local,
+            self.car.get_link("right_front_wheel").idx_local,
+        ]
+        self.slip_frame_link_idx = [
+            self.car.get_link("base_link").idx_local,
+            self.car.get_link("base_link").idx_local,
+            self.car.get_link("left_steering_hinge").idx_local,
+            self.car.get_link("right_steering_hinge").idx_local,
+        ]
         self.base_lin_vel = torch.zeros(
             (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
         )
@@ -349,6 +360,18 @@ class F1tenthEnv:
                 device=self.device,
                 cache_id=self.track_cache_id,
             )
+
+            self._step_state["wheel_state"] = {
+                # Motion velocity is measured at wheel links, but the local frame
+                # for slip uses non-spinning references (base for rear, hinges for front).
+                "motion_link_vel": self.car.get_links_vel(
+                    links_idx_local=self.slip_motion_link_idx, ref="link_com"
+                ),
+                "frame_quat": self.car.get_links_quat(
+                    links_idx_local=self.slip_frame_link_idx
+                ),
+                "dof_vel": self.car.get_dofs_velocity(dofs_idx_local=self.wheel_dofs),
+            }
             self._step_state_valid = True
         return self._step_state
 
@@ -370,6 +393,7 @@ class F1tenthEnv:
             num_envs=self.num_envs,
             base_lin_vel=self.base_lin_vel,
             base_ang_vel=self.base_ang_vel,
+            last_actions=self.last_actions,
             base_pos=self.base_pos,
             base_quat=self.base_quat,
             centerline=self.centerline,
@@ -541,7 +565,7 @@ class F1tenthEnv:
 
         # Only apply brake torque to environments with non-zero brake
         brake_mask = brake > 1e-3
-        # also only apply brake 
+        # also only apply brake
         if brake_mask.any():
             brake_env_ids = env_ids[brake_mask]
             car.control_dofs_force(
@@ -573,7 +597,7 @@ class F1tenthEnv:
 
                 self.cam1.set_pose(
                     lookat=position.cpu() + np.array([0.0, 0.0, 0.5]),
-                    pos=position.cpu() + np.array([2.0, 0.0, 4.0]),
+                    pos=position.cpu() + np.array([3.0, 0.0, 7.0]),
                 )
                 rgb, *_ = self.cam1.render()
                 rr.log("image", rr.Image(rgb))
@@ -588,7 +612,6 @@ class F1tenthEnv:
             self.reset(done)
         else:
             self._update_observation()
-            self.extras["observations"]["critic"] = self.obs_buf
 
         self.last_actions.copy_(self.actions)
         return self.obs_buf, self.reward_buf, done, self.extras

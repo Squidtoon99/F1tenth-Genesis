@@ -151,6 +151,7 @@ def build_observation(
     num_envs: int,
     base_lin_vel: torch.Tensor,
     base_ang_vel: torch.Tensor,
+    last_actions: torch.Tensor,
     base_pos: torch.Tensor,
     base_quat: torch.Tensor,
     centerline: np.ndarray,
@@ -162,6 +163,7 @@ def build_observation(
         (
             base_lin_vel[:, :2],
             base_ang_vel[:, 2:3],
+            last_actions,
             obs_track_progress(centerline, base_pos, device),
             obs_centerline_angle(step_state, base_quat),
             obs_centerline_distance(step_state),

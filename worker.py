@@ -13,6 +13,7 @@ from policy import Policy, UniformRandomPolicy
 from replay import ReplayServer
 from task import get_task
 from f1tenth_env import F1tenthEnv
+from eval_worker import process_eval_data
 
 try:
     from dotenv import load_dotenv
@@ -79,7 +80,8 @@ def rollout_loop(cfg: "Config"):
 
         obs, _ = env.reset()
         trajs = [[] for _ in range(num_envs)]  # list of trajectories for each agent
-
+        extras = []
+        step = 0
         for step in range(max_steps):
             actions = agent_policy.get_actions(obs, exploit=task.is_eval)
             next_obs, reward, done, extra = env.step(actions)
@@ -94,6 +96,8 @@ def rollout_loop(cfg: "Config"):
                         "done": agent_done,
                     }
                 )
+                if task.is_eval:
+                    extras.append(extra)
 
             if step + 1 >= n_steps and task.table_name:
                 # Construct N-Step subtrajectory if data collection task
@@ -102,11 +106,16 @@ def rollout_loop(cfg: "Config"):
 
             if task.time_out_fn(step, obs):
                 break
-        if env.cam1 is not None:
+
+        if env.cam1:
             env.cam1.stop_recording(
-                save_to_filename=output_dir / f"episode_{episode}.mp4", fps=60
+                save_to_filename=output_dir
+                / f"policy_{agent_policy.policy['version']}.mp4",
+                fps=60,
             )
-            episode += 1
+        if task.is_eval:
+            process_eval_data(cfg, task, extras, trajs[0])
+
         logging.info(f"Task finished after {step+1} steps. Resetting environment...")
         env.close()
 
@@ -115,7 +124,7 @@ def main():
     gs.init()
 
     session_id = os.getenv("SESSION_ID", "0")
-    cfg = Config(session_id=session_id, redis_uri=os.getenv("REDIS_URI"))
+    cfg = Config(session_id=session_id)
     rollout_loop(cfg)
 
 
