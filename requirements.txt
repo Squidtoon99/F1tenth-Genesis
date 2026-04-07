@@ -8,5 +8,8 @@ boto3
 botocore
 python-dotenv
 sqlalchemy
-psycopg2
+psycopg2-binary
 random_word
+wandb
+joblib
+rerun-sdk
