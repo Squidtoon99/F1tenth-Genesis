@@ -246,7 +246,7 @@ def rollout_loop(cfg: "Config"):
         num_envs=num_envs,
         obs_cfg=cfg.obs,
         reward_cfg=cfg.reward,
-        show_viewer=True,
+        show_viewer=False,
         enable_recording=True,
     )
 
@@ -297,7 +297,10 @@ def rollout_loop(cfg: "Config"):
 
 def main():
     logging.info("Initializing Genesis and setting up the scene...")
-    rr.init("f1tenth-genesis", spawn=True)
+    # rr.init("f1tenth-genesis", spawn=False)
+    # rr.init("f1tenth-genesis")
+    # server_uri = rr.serve_grpc()
+    # rr.serve_web_viewer(connect_to=server_uri)
     gs.init()
 
     session_id = os.getenv("SESSION_ID", "0")

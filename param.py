@@ -30,14 +30,14 @@ class S3ParameterServer:
     def __init__(
         self,
         bucket: str,
-        run_id: str,
+        session_id: str,
         endpoint_url: str,
         access_key: str,
         secret_key: str,
         region: str = "us-east-1",
     ):
         self.bucket = bucket
-        self.run_id = run_id
+        self.session_id = session_id
         self.endpoint_url = endpoint_url
         self.access_key = access_key
         self.secret_key = secret_key
@@ -45,7 +45,7 @@ class S3ParameterServer:
         self.log = logging.getLogger("S3ParameterServer")
 
         cache_root = os.getenv("POLICY_CACHE_DIR", ".policy_cache")
-        self.cache_dir = Path(cache_root) / self.run_id
+        self.cache_dir = Path(cache_root) / self.session_id
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.max_retries = 5
@@ -60,7 +60,7 @@ class S3ParameterServer:
         access_key = os.getenv("S3_ACCESS_KEY_ID")
         secret_key = os.getenv("S3_SECRET_ACCESS_KEY")
         bucket = os.getenv("S3_BUCKET")
-        run_id = os.getenv("RL_RUN_ID")
+        session_id = os.getenv("SESSION_ID")
         region = os.getenv("S3_REGION", "us-east-1")
 
         missing = [
@@ -70,7 +70,7 @@ class S3ParameterServer:
                 ("S3_ACCESS_KEY_ID", access_key),
                 ("S3_SECRET_ACCESS_KEY", secret_key),
                 ("S3_BUCKET", bucket),
-                ("RL_RUN_ID", run_id),
+                ("SESSION_ID", session_id),
             ]
             if not value
         ]
@@ -81,7 +81,7 @@ class S3ParameterServer:
 
         return cls(
             bucket=bucket or "",
-            run_id=run_id or "",
+            session_id=session_id or "",
             endpoint_url=endpoint or "",
             access_key=access_key or "",
             secret_key=secret_key or "",
@@ -103,10 +103,10 @@ class S3ParameterServer:
         )
 
     def _policy_key(self, version: int) -> str:
-        return f"rl/{self.run_id}/policies/policy_{version:08d}.pt"
+        return f"rl/{self.session_id}/policies/policy_{version:08d}.pt"
 
     def _manifest_key(self) -> str:
-        return f"rl/{self.run_id}/manifests/latest.json"
+        return f"rl/{self.session_id}/manifests/latest.json"
 
     def _serialize_checkpoint(self, state_dict: dict) -> bytes:
         buffer = io.BytesIO()
