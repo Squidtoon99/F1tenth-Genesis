@@ -85,9 +85,12 @@ class F1tenthEnv:
                 res=(960, 640),
                 max_FPS=int(1.0 / self.dt),
             ),
-            rigid_options=gs.options.RigidOptions(enable_self_collision=False),
+            rigid_options=gs.options.RigidOptions(
+                enable_self_collision=False,
+                constraint_solver=gs.constraint_solver.CG,
+            ),
             sim_options=gs.options.SimOptions(
-                dt=self.dt, substeps=self.env_cfg.get("sim_substeps", 8)
+                dt=self.dt, substeps=self.env_cfg.get("sim_substeps", 5)
             ),
             show_viewer=show_viewer,
         )

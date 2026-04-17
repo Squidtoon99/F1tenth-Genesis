@@ -45,7 +45,7 @@ class S3ParameterServer:
         self.log = logging.getLogger("S3ParameterServer")
 
         cache_root = os.getenv("POLICY_CACHE_DIR", ".policy_cache")
-        self.cache_dir = Path(cache_root) / self.session_id
+        self.cache_dir = Path(cache_root).expanduser() / self.session_id
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.max_retries = 5
@@ -360,18 +360,27 @@ class PolicyFetcher:
         self.log = logging.getLogger("PolicyFetcher")
         self.local_version: int | None = None
 
-    def maybe_refresh(self) -> int | None:
-        manifest = self.param_server.get_latest_manifest()
-        if manifest is None:
-            return None
+    def maybe_refresh(self, version: int | None = None) -> int | None:
+        if version is None:
+            manifest = self.param_server.get_latest_manifest()
+            if manifest is None:
+                return None
 
-        latest = int(manifest["version"])
-        self.log.info(
-            "Latest version seen=%d local_version=%s", latest, self.local_version
-        )
-        if self.local_version is not None and latest <= self.local_version:
-            return None
-
+            latest = int(manifest["version"])
+            self.log.info(
+                "Latest version seen=%d local_version=%s", latest, self.local_version
+            )
+            if self.local_version is not None and latest <= self.local_version:
+                return None
+        else:
+            latest = version
+            if self.local_version is not None and latest <= self.local_version:
+                self.log.info(
+                    "Requested version=%d is not newer than local_version=%s",
+                    latest,
+                    self.local_version,
+                )
+                return None
         state_dict = self.param_server.download_actor(version=latest)
         self.actor.load_state_dict(state_dict, strict=False)
         self.actor.to(self.device)

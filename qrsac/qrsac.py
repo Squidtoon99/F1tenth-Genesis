@@ -60,12 +60,14 @@ class QRSACTrainer:
     def __init__(
         self,
         models: Models,
+        device: torch.device,
         gamma: float = 0.99,
         n_step: int = 7,
         alpha: float = 0.2,
         smooth_factor: float = 0.005,
         kappa: float = 1.0,
     ):
+        self.device = device
         self.actor = models.actor
         self.critic1 = models.critic1
         self.critic2 = models.critic2
@@ -85,15 +87,15 @@ class QRSACTrainer:
         self.kappa = kappa
 
     def update(self, batch) -> Losses:
-        obs = batch["obs"]
-        action = batch.get("act", batch.get("action"))
-        reward = batch.get("rew", batch.get("reward"))
-        next_obs = batch.get("obs2", batch.get("next_obs"))
-        done = batch["done"]
+        obs = batch["obs"].to(self.device)
+        action = batch["action"].to(self.device)
+        reward = batch["reward"].to(self.device)
+        next_obs = batch["next_obs"].to(self.device)
+        done = batch["done"].to(self.device)
 
         if action is None or reward is None or next_obs is None:
             raise KeyError(
-                "Batch must contain obs, action/act, reward/rew, next_obs/obs2, and done."
+                "Batch must contain obs, action, reward, next_obs, and done."
             )
 
         critic_params = list(self.critic1.parameters()) + list(

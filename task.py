@@ -27,7 +27,7 @@ class LaunchStrategy:
     def eval_launch(cls):
         return cls(
             type="eval_launch",
-            data={"num_cars": 1},
+            data={"num_cars": 10},
         )
 
 
@@ -82,6 +82,16 @@ class TaskServer:
 
     def pop_mistake_learning_task(self) -> Task:
         raise NotImplementedError("No mistake learning tasks implemented yet.")
+
+    @property
+    def wandb_id(self) -> Optional[str]:
+        if key := self.redis.get("wandb_id"):
+            return str(key)
+        return None
+
+    @wandb_id.setter
+    def wandb_id(self, value: str):
+        self.redis.set("wandb_id", value)
 
 
 TASK_SPECS = [

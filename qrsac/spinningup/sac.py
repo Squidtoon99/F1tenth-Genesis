@@ -34,9 +34,9 @@ class ReplayBuffer:
         idxs = np.random.randint(0, self.size, size=batch_size)
         batch = dict(
             obs=self.obs_buf[idxs],
-            obs2=self.obs2_buf[idxs],
-            act=self.act_buf[idxs],
-            rew=self.rew_buf[idxs],
+            next_obs=self.obs2_buf[idxs],
+            action=self.act_buf[idxs],
+            reward=self.rew_buf[idxs],
             done=self.done_buf[idxs],
         )
         return {k: torch.as_tensor(v, dtype=torch.float32) for k, v in batch.items()}

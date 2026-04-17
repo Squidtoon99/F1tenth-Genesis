@@ -16,8 +16,8 @@ class TabledReplayBuffer(object):
         }
         self.rew_gamma = rew_gamma
 
-    def write(self, table_name: str, obs, action, rew, next_obs, done):
-        self.store(table_name, obs, action, rew, next_obs, done)
+    def write(self, table_name: str, obs, action, reward, next_obs, done):
+        self.store(table_name, obs, action, reward, next_obs, done)
 
     def store(self, table_name: str, obs, act, rew, next_obs, done):
         if table_name not in self.tables:
@@ -75,6 +75,7 @@ class ReplayServer(TabledReplayBuffer):
 
         self.last_id = "0"
         self._running = False
+        self.thread = None
 
     def start(self):
         self._running = True
@@ -83,7 +84,8 @@ class ReplayServer(TabledReplayBuffer):
 
     def stop(self):
         self._running = False
-        self.thread.join()
+        if self.thread:
+            self.thread.join()
 
     @staticmethod
     def _decode_message_data(message_data):
@@ -97,7 +99,7 @@ class ReplayServer(TabledReplayBuffer):
             "table_name": parsed["table_name"],
             "obs": torch.tensor(json.loads(parsed["obs"]), dtype=torch.float32),
             "action": torch.tensor(json.loads(parsed["action"]), dtype=torch.float32),
-            "rew": float(parsed.get("rew", parsed["reward"])),
+            "reward": float(parsed.get("rew", parsed["reward"])),
             "next_obs": torch.tensor(
                 json.loads(parsed["next_obs"]), dtype=torch.float32
             ),

@@ -44,14 +44,14 @@ DEFAULT_CONFIG = {
         "contact_margin_m": 0.08,
         "future_track_num_points": 60,
         "future_track_horizon_s": 6.0,
-        "future_track_width": 2.0,
+        "future_track_width": 2.2,
     },
     "env": {
         "num_actions": 2,
         "episode_length": 25.0,
         "control_interval": 10,
         "sim_dt": 0.01,
-        "sim_substeps": 8,
+        "sim_substeps": 10,
         "clip_actions": 1.0,
         "simulate_action_latency": True,
         "term_oob_margin_m": 0.15,
@@ -76,7 +76,7 @@ DEFAULT_CONFIG = {
         "wheelbase": 0.325,
         "track_width": 0.20,
         "wheel_radius": 0.05,
-        "track": "SaoPaulo",
+        "track": "Oschersleben",
     },
     "reward": {
         "progress_k_fwd": 5.0,
@@ -108,11 +108,11 @@ class Config:
 
     def __init__(
         self,
-        session_id: str,
+        session_id: str | None = None,
         bootstrap_db: bool = True,
     ):
         load_dotenv()
-        self.session_id = session_id
+        self.session_id = session_id or os.getenv("SESSION_ID", "1")
 
         # Redis Config
 
@@ -140,7 +140,12 @@ class Config:
                     )
                     self.logger.info("Database bootstrap completed successfully.")
                 except Exception as exc:
-                    self.logger.exception(f"Database bootstrap failed: {exc}")
+                    if "the database system is starting up" in str(exc):
+                        self.logger.warning(
+                            "Database is still starting up."
+                        )
+                    else:
+                        self.logger.exception(f"Database bootstrap failed: {exc}")
 
         
         self._cfg = DEFAULT_CONFIG.copy()

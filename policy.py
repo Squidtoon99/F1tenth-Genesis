@@ -91,14 +91,14 @@ class Policy(PolicyBase):
             "version": self._policy_version,
         }
 
-    def maybe_refresh(self, force: bool = False) -> bool:
+    def maybe_refresh(self, force: bool = False, version: int | None = None) -> bool:
         if self._policy_fetcher is None:
             if force:
                 self.log.info("No S3 parameter server configured; using local weights.")
             return False
 
         try:
-            updated = self._policy_fetcher.maybe_refresh()
+            updated = self._policy_fetcher.maybe_refresh(version=version)
             if updated is None:
                 return False
             self._policy_version = updated

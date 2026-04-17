@@ -1,3 +1,5 @@
+import torch
+
 from qrsac import QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor, Models
 from qrsac.replay import ReplayServer
 import torch.nn as nn
@@ -5,6 +7,8 @@ from config import Config
 import logging
 import wandb
 from task import TaskServer
+from tqdm import tqdm
+import time 
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,13 +49,18 @@ def make_target_q_network(cfg):
 
 def train_loop(cfg: "Config"):
     log = logging.getLogger("Trainer")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     models = Models(
-        actor=make_policy_network(cfg),
-        critic1=make_q_network(cfg),
-        critic2=make_q_network(cfg),
-        critic1_target=make_target_q_network(cfg),
-        critic2_target=make_target_q_network(cfg),
+        actor=make_policy_network(cfg).to(device),
+        critic1=make_q_network(cfg).to(device),
+        critic2=make_q_network(cfg).to(device),
+        critic1_target=make_target_q_network(cfg).to(device),
+        critic2_target=make_target_q_network(cfg).to(device),
     )
+    
+    models.critic1_target.load_state_dict(models.critic1.state_dict())
+    models.critic2_target.load_state_dict(models.critic2.state_dict())
 
     trainer = QRSACTrainer(
         models,
@@ -59,6 +68,7 @@ def train_loop(cfg: "Config"):
         n_step=cfg.model["n_step"],
         alpha=0.1,
         smooth_factor=0.005,
+        device=device
     )
 
     replay_server = ReplayServer(
@@ -74,22 +84,23 @@ def train_loop(cfg: "Config"):
     task_server = TaskServer(cfg)
 
     replay_server.start()
-
-    log.info("Waiting for replay server to have minimum samples...")
-    replay_server.block_and_wait(minimum_samples=cfg.model["minimum_train_samples"])
-
+    task_server.warm_up = True
+    
     try:
-        log.info("Starting training loop")
+        log.info("Waiting for replay server to have minimum samples...")
         global_train_step = 0
         with wandb.init(
             project="f1tenth-genesis",
             name=f"trainer_{cfg.session_id}",
             config=cfg.dict(),
         ) as run:
+            task_server.wandb_id = run.id
+            replay_server.block_and_wait(minimum_samples=cfg.model["minimum_train_samples"])
+            log.info("Starting training loop")
             while True:
                 epoch_policy_loss = 0.0
                 epoch_critic_loss = 0.0
-                for _ in range(cfg.model["batches_per_epoch"]):
+                for _ in tqdm(range(cfg.model["batches_per_epoch"]), desc="Training Batches"):
                     transition_data = replay_server.uniform_sample_batch()
                     losses = trainer.update(transition_data)
                     global_train_step += 1
@@ -135,5 +146,5 @@ def train_loop(cfg: "Config"):
 
 
 if __name__ == "__main__":
-    cfg = Config(session_id="1")
+    cfg = Config()
     train_loop(cfg)

@@ -206,17 +206,14 @@ def _log_agent_step(
 
 
 def rollout_loop(cfg: "Config"):
-    max_steps = int(os.getenv("COLLECTOR_STEPS", "500"))
+    max_steps = int(os.getenv("COLLECTOR_STEPS", "10000"))
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(os.getenv("ROLLOUT_DIR", "outputs/testing")) / run_id
+    output_dir = Path(os.getenv("ROLLOUT_DIR", "outputs/testing")).expanduser() / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Handling task selection
     task = Task(
-        launch_strategy=LaunchStrategy.uniform_jittered(
-            num_cars=2,
-            mps_range=(0.0, 1.0),
-        ),
+        launch_strategy=LaunchStrategy.eval_launch(),
         random_policy=False,
         table_name=None,
         time_out_fn=lambda step, obs: step >= max_steps - 1,
@@ -234,7 +231,7 @@ def rollout_loop(cfg: "Config"):
             action_dim=cfg.env["num_actions"],
             action_clip=cfg.env["clip_actions"],
         )
-        agent_policy.maybe_refresh(force=True)
+        agent_policy.maybe_refresh(force=True, version=500)
 
     num_envs = int(task.launch_strategy.data.get("num_cars", 20))
     env = F1tenthEnv(
@@ -273,7 +270,7 @@ def rollout_loop(cfg: "Config"):
                 extra=extra,
                 num_envs=num_envs,
             )
-            
+
             trajs[agent_id].append(
                 {
                     "obs": obs[agent_id].detach().cpu(),
@@ -283,6 +280,7 @@ def rollout_loop(cfg: "Config"):
                     "done": agent_done,
                 }
             )
+        extras.append(extra)
         obs = next_obs
 
     logging.info(f"Task finished after {step+1} steps. Resetting environment...")
@@ -292,7 +290,14 @@ def rollout_loop(cfg: "Config"):
         )
 
     if task.is_eval:
-        process_eval_data(cfg, task, extras, trajs[0])
+        data = process_eval_data(cfg, task, extras, trajs[0])
+
+        # Log best time to redis leaderboard
+        if "lap_times" in data and len(data["lap_times"]) > 0:
+            best_time = min(data["lap_times"])
+            rr.log("leaderboard/best_lap_time", rr.Scalars(best_time))
+
+            cfg.redis.zadd("laps", {agent_policy.policy["version"]: best_time})
     env.close()
 
 def main():
@@ -301,10 +306,10 @@ def main():
     # rr.init("f1tenth-genesis")
     # server_uri = rr.serve_grpc()
     # rr.serve_web_viewer(connect_to=server_uri)
-    gs.init()
+    gs.init(performance_mode=True)
 
-    session_id = os.getenv("SESSION_ID", "0")
-    cfg = Config(session_id=session_id, bootstrap_db=False)
+    # session_id = os.getenv("SESSION_ID", "0")
+    cfg = Config(session_id="1", bootstrap_db=False)
     rollout_loop(cfg)
 
 

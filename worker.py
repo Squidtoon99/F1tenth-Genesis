@@ -123,8 +123,7 @@ def main():
     logging.info("Initializing Genesis and setting up the scene...")
     gs.init()
 
-    session_id = os.getenv("SESSION_ID", "0")
-    cfg = Config(session_id=session_id)
+    cfg = Config()
     rollout_loop(cfg)
 
 
