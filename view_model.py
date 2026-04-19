@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from config import Config
 from eval_worker import process_eval_data
-from policy import Policy, UniformRandomPolicy
+from policy import Policy, UniformRandomPolicy, CenterFollowPolicy
 from replay import ReplayServer
 from task import LaunchStrategy, Task, get_task
 from f1tenth_env import F1tenthEnv

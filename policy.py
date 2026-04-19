@@ -20,6 +20,45 @@ class PolicyBase:
         raise NotImplementedError
 
 
+class CenterFollowPolicy(PolicyBase):
+    def __init__(self, action_dim: int = 2, action_clip: float = 1.0):
+        self.action_dim = action_dim
+        self.action_clip = float(action_clip)
+        self.curr_error = 0.0
+        self.prev_error = 0.0
+    
+    def maybe_refresh(self, force = False) -> bool:
+        return False
+    def get_actions(
+        self, observation: torch.Tensor, exploit: bool = False
+    ) -> torch.Tensor:
+        if observation.ndim != 2:
+            raise ValueError("Observation batch must be rank-2 [batch, obs_dim]")
+        
+        centerline_angle = observation[:, 7]
+        centerline_distance = observation[:, 8]
+
+        self.curr_error = centerline_distance
+
+        speed = 1 - torch.clamp_min(torch.abs(centerline_angle), 0.1)
+        steering = self.calc_steering()
+        action = torch.stack((speed, steering), dim=1)
+
+        self.prev_error = self.curr_error
+        
+        return torch.clamp(action, -self.action_clip, self.action_clip) # clamping seems beneficial in sim, may not be necessary
+        # return action
+        
+    def calc_steering(self):
+        # pid vals need tuning, will tune after centerline distance is fixed
+        K_p = 1.0
+        K_i = 0.0
+        K_d = 1.0
+
+        return (-1.0 * K_p * self.curr_error) + (1.0 * K_d * (self.curr_error - self.prev_error))
+
+
+
 class UniformRandomPolicy(PolicyBase):
     def __init__(self, action_dim: int = 2, action_clip: float = 1.0):
         self.action_dim = action_dim
