@@ -107,8 +107,7 @@ TASK_SPECS = [
 ]
 
 
-def get_task(cfg: "Config") -> Task:
-    server = TaskServer(cfg)
+def get_task(server: "TaskServer") -> Task:
 
     if server.warm_up:
         return Task(

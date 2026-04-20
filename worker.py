@@ -1,4 +1,5 @@
 import os
+import time
 import genesis as gs
 import logging
 from datetime import datetime
@@ -11,7 +12,7 @@ import torch
 from config import Config
 from policy import Policy, UniformRandomPolicy
 from replay import ReplayServer
-from task import get_task
+from task import TaskServer, get_task
 from f1tenth_env import F1tenthEnv
 from eval_worker import process_eval_data
 
@@ -25,11 +26,11 @@ except ImportError:
 import wandb
 
 # logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format="[%(asctime)s] %(name)s - %(levelname)s - %(message)s",
+#     datefmt="%Y-%m-%d %H:%M:%S",
+# )
 
 
 def rollout_loop(cfg: "Config"):
@@ -41,15 +42,22 @@ def rollout_loop(cfg: "Config"):
 
     replay_server = ReplayServer(cfg)
 
-    run = wandb.init(
+    task_server = TaskServer(cfg)
+
+    # Waiting for trainer to start
+    logging.info("Waiting for trainer to start...")
+    while task_server.wandb_id is None:
+        time.sleep(1)
+
+    wandb.init(
         project="f1tenth-genesis",
-        name=f"rollout_{cfg.session_id}",
         config=cfg.dict(),
+        id=task_server.wandb_id,
     )
-    episode = 0
-    while True:
+
+    while cfg.redis.get("done") != "1":
         # Handling task selection
-        task = get_task(cfg)
+        task = get_task(task_server)
 
         if task.random_policy:
             agent_policy = UniformRandomPolicy(
@@ -114,8 +122,15 @@ def rollout_loop(cfg: "Config"):
                 fps=60,
             )
         if task.is_eval:
-            process_eval_data(cfg, task, extras, trajs[0])
+            data = process_eval_data(cfg, task, extras, trajs[0])
 
+            # log lap times into redis
+            if "lap_times" in data:
+                for _, lap_time in enumerate(data["lap_times"]):
+                    task_server.redis.zadd(
+                        "lap_times",
+                        {f"policy_{agent_policy.policy['version']}": lap_time},
+                    )
         logging.info(f"Task finished after {step+1} steps. Resetting environment...")
         env.close()
 

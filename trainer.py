@@ -9,6 +9,7 @@ import wandb
 from task import TaskServer
 from tqdm import tqdm
 import time 
+from db.models import TrainingSession
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,7 +51,7 @@ def make_target_q_network(cfg):
 def train_loop(cfg: "Config"):
     log = logging.getLogger("Trainer")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     models = Models(
         actor=make_policy_network(cfg).to(device),
         critic1=make_q_network(cfg).to(device),
@@ -58,7 +59,7 @@ def train_loop(cfg: "Config"):
         critic1_target=make_target_q_network(cfg).to(device),
         critic2_target=make_target_q_network(cfg).to(device),
     )
-    
+
     models.critic1_target.load_state_dict(models.critic1.state_dict())
     models.critic2_target.load_state_dict(models.critic2.state_dict())
 
@@ -85,7 +86,7 @@ def train_loop(cfg: "Config"):
 
     replay_server.start()
     task_server.warm_up = True
-    
+
     try:
         log.info("Waiting for replay server to have minimum samples...")
         global_train_step = 0
@@ -139,7 +140,7 @@ def train_loop(cfg: "Config"):
 
                 if current_version <= 5 or current_version % 5 == 0:
                     task_server.needs_eval = True
-                logging.info("Signaled workers to run evaluation episodes.")
+                    logging.info("Signaled workers to run evaluation episodes.")
     except KeyboardInterrupt:
         pass
     replay_server.stop()
@@ -147,4 +148,25 @@ def train_loop(cfg: "Config"):
 
 if __name__ == "__main__":
     cfg = Config()
-    train_loop(cfg)
+    cfg.redis.set("done", "0")
+
+    if cfg.db_session_factory is not None:
+        with cfg.db_session_factory() as session:
+            # find training session for current session_id or create if not exists
+            training_session = (
+                session.query(TrainingSession).filter_by(id=cfg.session_id).first()
+            )
+
+            if training_session is None:
+                training_session = TrainingSession(
+                    id=cfg.session_id,
+                    name=f"Session {cfg.session_id}",
+                    tracks=[cfg.env["track"]],
+                )
+                session.add(training_session)
+                session.commit()
+                logging.info(f"Created new training session with ID {cfg.session_id}")
+    try:
+        train_loop(cfg)
+    finally:
+        cfg.redis.set("done", "1")

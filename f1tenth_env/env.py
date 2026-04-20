@@ -200,6 +200,7 @@ class F1tenthEnv:
 
         self._step_state: dict[str, Any] = {}
         self._step_state_valid = False
+        self._eval_launch_initialized = False
 
         self.reset()
 
@@ -294,21 +295,44 @@ class F1tenthEnv:
             quat,
         )
 
-    def _apply_root_reset(self, env_ids: torch.Tensor) -> torch.Tensor | None:
+    def _closest_centerline_indices(self, pos_xy: torch.Tensor) -> torch.Tensor:
+        if pos_xy.numel() == 0:
+            return torch.empty((0,), dtype=torch.int64, device=self.device)
+
+        centerline_xy = torch.as_tensor(
+            self.centerline[:, :2], dtype=gs.tc_float, device=self.device
+        )
+        deltas = pos_xy[:, None, :] - centerline_xy[None, :, :]
+        dist_sq = (deltas * deltas).sum(dim=-1)
+        return torch.argmin(dist_sq, dim=1).to(dtype=torch.int64)
+
+    def _apply_root_reset(
+        self, env_ids: torch.Tensor
+    ) -> tuple[torch.Tensor | None, bool]:
         car = self.car  # type: Any
         if not hasattr(car, "set_pos") or not hasattr(car, "set_quat"):
             raise AttributeError(
                 "Genesis car entity must expose set_pos and set_quat for randomized reset"
             )
 
+        preserve_buffers = False
+
         match self.spawn_strategy:
             case "eval_launch":
-                # For evaluation, we can use fixed spawn point (first point on the track)
-                pos, quat = self._sample_track_spawn(
-                    env_ids,
-                    centerline_idx=torch.zeros(
+                if not self._eval_launch_initialized:
+                    centerline_idx = torch.zeros(
                         (env_ids.numel(),), dtype=torch.int64, device=self.device
-                    ),
+                    )
+                    self._eval_launch_initialized = True
+                else:
+                    current_pos = car.get_pos(envs_idx=env_ids)
+                    centerline_idx = self._closest_centerline_indices(
+                        current_pos[:, :2]
+                    )
+                    preserve_buffers = True
+
+                pos, quat = self._sample_track_spawn(
+                    env_ids, centerline_idx=centerline_idx
                 )
 
                 car.set_pos(pos, envs_idx=env_ids)
@@ -316,11 +340,13 @@ class F1tenthEnv:
             case "uniform_jittered" | _:
                 pos, quat = self._sample_track_spawn(env_ids)
                 if pos.shape[0] == 0:
-                    return None
+                    return None, preserve_buffers
                 car.set_pos(pos, envs_idx=env_ids)
                 car.set_quat(quat, envs_idx=env_ids, zero_velocity=True, relative=False)
 
-        return self._apply_reset_speed(env_ids)
+        # Always reset speed even on eval laps
+        reset_speed = self._apply_reset_speed(env_ids)
+        return reset_speed, preserve_buffers
 
     def _apply_reset_speed(self, env_ids: torch.Tensor) -> torch.Tensor | None:
         n = int(env_ids.numel())
@@ -469,32 +495,34 @@ class F1tenthEnv:
             return self.obs_buf, self.extras
 
         env_ids = self._mask_to_env_ids(envs_idx)
-        reset_speed_mps = self._apply_root_reset(env_ids)
+        reset_speed_mps, preserve_buffers = self._apply_root_reset(env_ids)
         self.scene.step()
 
-        self.base_lin_vel.masked_fill_(envs_idx[:, None], 0.0)
-        self.base_ang_vel.masked_fill_(envs_idx[:, None], 0.0)
-        self.actions.masked_fill_(envs_idx[:, None], 0.0)
-        self.last_actions.masked_fill_(envs_idx[:, None], 0.0)
-        self.wheel_omega_cmd.masked_fill_(envs_idx[:, None], 0.0)
-        if reset_speed_mps is not None:
-            max_speed = max(float(self.env_cfg.get("max_speed", 5.0)), 1e-6)
-            clip_actions = float(self.env_cfg.get("clip_actions", 1.0))
-            reset_throttle = torch.clamp(
-                reset_speed_mps / max_speed,
-                min=-clip_actions,
-                max=clip_actions,
-            )
-            self.actions[env_ids, 0] = reset_throttle
-            self.last_actions[env_ids, 0] = reset_throttle
-        self.episode_steps_buf.masked_fill_(envs_idx, 0)
-        self.lap_count_buf.masked_fill_(envs_idx, 0)
+        if not preserve_buffers:
+            self.base_lin_vel.masked_fill_(envs_idx[:, None], 0.0)
+            self.base_ang_vel.masked_fill_(envs_idx[:, None], 0.0)
+            self.actions.masked_fill_(envs_idx[:, None], 0.0)
+            self.last_actions.masked_fill_(envs_idx[:, None], 0.0)
+            self.wheel_omega_cmd.masked_fill_(envs_idx[:, None], 0.0)
+            if reset_speed_mps is not None:
+                max_speed = max(float(self.env_cfg.get("max_speed", 5.0)), 1e-6)
+                clip_actions = float(self.env_cfg.get("clip_actions", 1.0))
+                reset_throttle = torch.clamp(
+                    reset_speed_mps / max_speed,
+                    min=-clip_actions,
+                    max=clip_actions,
+                )
+                self.actions[env_ids, 0] = reset_throttle
+                self.last_actions[env_ids, 0] = reset_throttle
+            self.episode_steps_buf.masked_fill_(envs_idx, 0)
+            self.lap_count_buf.masked_fill_(envs_idx, 0)
         self.reset_buf.masked_fill_(envs_idx, False)
 
         reset_termination_state(self.term_state, envs_idx)
 
-        for value in self.reward_state["episode_sums"].values():
-            value.masked_fill_(envs_idx, 0.0)
+        if not preserve_buffers:
+            for value in self.reward_state["episode_sums"].values():
+                value.masked_fill_(envs_idx, 0.0)
 
         self._update_state_buffers()
         step_state = self._get_step_state()
@@ -513,7 +541,7 @@ class F1tenthEnv:
         self, exec_actions: torch.Tensor, env_ids: torch.Tensor | None = None
     ):
         """
-        Apply actions to the vehicles in a parallelized manner.
+        Apply direct steering/throttle controls to the motors/hinges
 
         Args:
             exec_actions: (N, 2) tensor of [throttle, steering] actions

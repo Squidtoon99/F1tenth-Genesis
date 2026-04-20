@@ -91,7 +91,7 @@ DEFAULT_CONFIG = {
         },
     },
     "model": {
-        "hidden_layers": [256, 256],
+        "hidden_layers": [512, 512, 512],
         "num_quantiles": 32,
         "rew_gamma": 0.9896,
         "n_step": 7,
