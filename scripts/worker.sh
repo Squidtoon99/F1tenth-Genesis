@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=$(nvidia-smi -L | grep MIG | head -n1 | sed -E 's/.*(MIG-[^)]+).*/\1/')  FI_PROVIDER=tcp python worker.py
