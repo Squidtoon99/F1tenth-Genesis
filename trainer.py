@@ -1,14 +1,21 @@
+import os
+
 import torch
+import tensorflow as tf  # killing me
+
+# Keep gpu for pytorch
+tf.config.set_visible_devices([], "GPU")
+import reverb  # this requires tensorflow but worth it
 
 from qrsac import QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor, Models
-from qrsac.replay import ReplayServer
 import torch.nn as nn
 from config import Config
 import logging
 import wandb
 from task import TaskServer
 from tqdm import tqdm
-import time 
+from replay import sample_data
+
 from db.models import TrainingSession
 
 logging.basicConfig(
@@ -69,14 +76,49 @@ def train_loop(cfg: "Config"):
         n_step=cfg.model["n_step"],
         alpha=0.1,
         smooth_factor=0.005,
-        device=device
+        device=device,
     )
 
-    replay_server = ReplayServer(
-        cfg,
-        tables=cfg.model["replay_tables"],
-        obs_dim=cfg.obs["num_obs"],
-        act_dim=cfg.env["num_actions"],
+    signature = {
+        "obs": tf.TensorSpec([cfg.model["n_step"], cfg.obs["num_obs"]], tf.float32),
+        "action": tf.TensorSpec(
+            [cfg.model["n_step"], cfg.env["num_actions"]], tf.float32
+        ),
+        "reward": tf.TensorSpec([cfg.model["n_step"], 1], tf.float32),
+        "done": tf.TensorSpec([cfg.model["n_step"], 1], tf.float32),
+    }
+    replay_server = reverb.Server(
+        tables=[
+            reverb.Table(
+                name=table_name,
+                sampler=reverb.selectors.Uniform(),
+                remover=reverb.selectors.Fifo(),
+                max_size=cfg.model["replay_buffer_limit"],
+                rate_limiter=reverb.rate_limiters.SampleToInsertRatio(
+                    samples_per_insert=cfg.model["update_to_data_ratio"]
+                    * cfg.model["batch_size"],
+                    min_size_to_sample=cfg.model["minimum_train_samples"],
+                    error_buffer=2
+                    * cfg.model["batch_size"]
+                    * cfg.model["update_to_data_ratio"],
+                ),
+                signature=signature,
+            )
+            for table_name in cfg.model["replay_tables"]
+        ]
+    )
+
+    table_datasets = [
+        reverb.TrajectoryDataset.from_table_signature(
+            server_address=f"{os.getenv('HOSTNAME', 'localhost')}:{replay_server.port}",
+            table=table_name,
+            max_in_flight_samples_per_worker=4 * cfg.model["batch_size"],
+        )
+        for table_name in cfg.model["replay_tables"]
+    ]
+    cfg.redis.set(
+        "replay_server_address",
+        f"{os.getenv('HOSTNAME', 'localhost')}:{replay_server.port}",
     )
 
     param_server = cfg.s3_parameter_server
@@ -84,7 +126,6 @@ def train_loop(cfg: "Config"):
 
     task_server = TaskServer(cfg)
 
-    replay_server.start()
     task_server.warm_up = True
 
     try:
@@ -96,13 +137,14 @@ def train_loop(cfg: "Config"):
             config=cfg.dict(),
         ) as run:
             task_server.wandb_id = run.id
-            replay_server.block_and_wait(minimum_samples=cfg.model["minimum_train_samples"])
             log.info("Starting training loop")
             while True:
                 epoch_policy_loss = 0.0
                 epoch_critic_loss = 0.0
-                for _ in tqdm(range(cfg.model["batches_per_epoch"]), desc="Training Batches"):
-                    transition_data = replay_server.uniform_sample_batch()
+                for _ in tqdm(
+                    range(cfg.model["batches_per_epoch"]), desc="Training Batches"
+                ):
+                    transition_data = sample_data(table_datasets, cfg, device=device)
                     losses = trainer.update(transition_data)
                     global_train_step += 1
 
@@ -165,7 +207,7 @@ if __name__ == "__main__":
                 )
                 session.add(training_session)
                 session.commit()
-                logging.info(f"Created new training session with ID {cfg.session_id}")
+                logging.info(f"Created new training session with ID %s", cfg.session_id)
     try:
         train_loop(cfg)
     finally:

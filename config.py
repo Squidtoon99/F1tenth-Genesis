@@ -95,10 +95,12 @@ DEFAULT_CONFIG = {
         "num_quantiles": 32,
         "rew_gamma": 0.9896,
         "n_step": 7,
-        "replay_tables": ["1v0", "1v1", "mistake_learning"],
+        "replay_tables": ["1v0"],  # "1v1", "mistake_learning"],
         "minimum_train_samples": 40000,
         "batches_per_epoch": 6000,
+        "replay_buffer_limit": 10**7,
         "batch_size": 1024,
+        "update_to_data_ratio": 4,
     },
 }
 
