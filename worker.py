@@ -108,55 +108,58 @@ def rollout_loop(cfg: "Config"):
         ]  # list of trajectories for each agent
         extras = []
         step = 0
-        with replay_client.trajectory_writer(
-            num_keep_alive_refs=cfg.model["n_step"]
-        ) as writer:
-            for step in range(max_steps):
-                actions = agent_policy.get_actions(obs, exploit=task.is_eval)
-                next_obs, reward, done, extra = env.step(actions)
-                for agent_id in range(num_envs):
-                    agent_done = bool(done[agent_id].item())
-                    trajs[agent_id].append(
-                        {
-                            "obs": obs[agent_id].detach().cpu(),
-                            "action": actions[agent_id].detach().cpu(),
-                            "reward": reward[agent_id].item(),
-                            "done": agent_done,
-                        }
-                    )
-                    if task.is_eval:
-                        extras.append(extra)
+        for step in range(max_steps):
+            actions = agent_policy.get_actions(obs, exploit=task.is_eval)
+            next_obs, reward, done, extra = env.step(actions)
+            for agent_id in range(num_envs):
+                agent_done = bool(done[agent_id].item())
+                trajs[agent_id].append(
+                    {
+                        "obs": obs[agent_id].detach().cpu(),
+                        "action": actions[agent_id].detach().cpu(),
+                        "reward": reward[agent_id].item(),
+                        "done": agent_done,
+                    }
+                )
+                if task.is_eval:
+                    extras.append(extra)
 
-                if step + 1 >= cfg.model["n_step"] and task.table_name:
-                    # Construct N-Step subtrajectory if data collection task
-                    for agent_id in range(num_envs):
-                        replay_client.insert(
-                            priorities={task.table_name: 1.0},
-                            data={
-                                "obs": np.stack(
-                                    [t["obs"].cpu().numpy() for t in trajs[agent_id]],
-                                    axis=0,
-                                ).astype(np.float32),
-                                "action": np.stack(
-                                    [t["action"] for t in trajs[agent_id]], axis=0
-                                ).astype(np.float32),
-                                "reward": np.asarray(
-                                    [t["reward"] for t in trajs[agent_id]],
-                                    dtype=np.float32,
-                                ).reshape(cfg.model["n_step"], 1),
-                                "done": np.asarray(
-                                    [float(t["done"]) for t in trajs[agent_id]],
-                                    dtype=np.float32,
-                                ).reshape(cfg.model["n_step"], 1),
+            if step + 1 >= cfg.model["n_step"] and task.table_name:
+                # Construct N-Step subtrajectory if data collection task
+                for agent_id in range(num_envs):
+                    # skip if not enough data or if trajectory ended before n steps
+                    if len(trajs[agent_id]) < cfg.model["n_step"]:
+                        continue
+                    with replay_client.trajectory_writer(
+                        num_keep_alive_refs=cfg.model["n_step"]
+                    ) as writer:
+                        for t in trajs[agent_id]:
+                            writer.append(
+                                data={
+                                    "obs": t["obs"].cpu().numpy().astype(np.float32),
+                                    "action": t["action"]
+                                    .cpu()
+                                    .numpy()
+                                    .astype(np.float32),
+                                    "reward": np.array([t["reward"]], dtype=np.float32),
+                                    "done": np.array([t["done"]], dtype=np.float32),
+                                },
+                            )
+                        writer.create_item(
+                            table=task.table_name,
+                            priority=1.0,
+                            trajectory={
+                                k: writer.history[k][-cfg.model["n_step"] :]
+                                for k in ["obs", "action", "reward", "done"]
                             },
                         )
-                        if trajs[agent_id][-1]["done"]:
-                            trajs[agent_id].clear()  # Clear trajectory on episode end
+                    if trajs[agent_id][-1]["done"]:
+                        trajs[agent_id].clear()  # Clear trajectory on episode end
 
-                obs = next_obs
+            obs = next_obs
 
-                if task.time_out_fn(step, obs):
-                    break
+            if task.time_out_fn(step, obs):
+                break
 
         if env.cam1:
             env.cam1.stop_recording(
@@ -178,8 +181,6 @@ def rollout_loop(cfg: "Config"):
             task_server.eval_workers_available = (
                 True  # ensure only one eval worker is running at a time
             )
-        else:
-            writer.flush()
 
         logging.info(
             f"Task finished after %d steps. Resetting environment...", step + 1

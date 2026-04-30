@@ -97,14 +97,16 @@ def train_loop(cfg: "Config"):
                 rate_limiter=reverb.rate_limiters.SampleToInsertRatio(
                     samples_per_insert=cfg.model["update_to_data_ratio"]
                     * cfg.model["batch_size"],
-                    min_size_to_sample=cfg.model["minimum_train_samples"],
+                    min_size_to_sample=(
+                        cfg.model["minimum_train_samples"] if pos == 0 else 0
+                    ),
                     error_buffer=2
                     * cfg.model["batch_size"]
                     * cfg.model["update_to_data_ratio"],
                 ),
                 signature=signature,
             )
-            for table_name in cfg.model["replay_tables"]
+            for pos, table_name in enumerate(cfg.model["replay_tables"])
         ]
     )
 
