@@ -36,7 +36,7 @@ class RedisWrapper:
 
 DEFAULT_CONFIG = {
     "obs": {
-        "num_obs": 370,
+        "num_obs": 372,
         "obs_scales": {
             "lin_vel": 1.0,
             "ang_vel": 1.0,

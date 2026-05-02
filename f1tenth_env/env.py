@@ -412,6 +412,9 @@ class F1tenthEnv:
         self.base_lin_vel = gu.inv_transform_by_quat(car.get_vel(), car.get_quat())
         self.base_ang_vel = gu.inv_transform_by_quat(car.get_ang(), car.get_quat())
 
+        self.base_lin_acc = gu.inv_transform_by_quat(
+            car.get_links_acc()[:, 0, :], car.get_quat()
+        )  # base link acceleration
         invalidate_step_caches(self.track_state)
         self._step_state_valid = False
 
@@ -422,6 +425,7 @@ class F1tenthEnv:
             num_envs=self.num_envs,
             base_lin_vel=self.base_lin_vel,
             base_ang_vel=self.base_ang_vel,
+            base_lin_acc=self.base_lin_acc,
             last_actions=self.last_actions,
             base_pos=self.base_pos,
             base_quat=self.base_quat,
