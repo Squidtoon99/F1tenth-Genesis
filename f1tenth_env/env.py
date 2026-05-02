@@ -144,6 +144,11 @@ class F1tenthEnv:
         self.base_ang_vel = torch.zeros(
             (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
         )
+
+        self.base_lin_acc = torch.zeros(
+            (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+        )
+
         self.base_pos = torch.empty(
             (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
         )
