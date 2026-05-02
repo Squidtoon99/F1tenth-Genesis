@@ -13,3 +13,4 @@ random_word
 wandb
 joblib
 rerun-sdk
+dm-reverb[tensorflow]
