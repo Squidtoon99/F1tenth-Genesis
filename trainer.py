@@ -107,7 +107,8 @@ def train_loop(cfg: "Config"):
                 signature=signature,
             )
             for pos, table_name in enumerate(cfg.model["replay_tables"])
-        ]
+        ],
+        port=21812,
     )
 
     table_datasets = [
@@ -115,7 +116,7 @@ def train_loop(cfg: "Config"):
             server_address=f"{os.getenv('HOSTNAME', 'localhost')}:{replay_server.port}",
             table=table_name,
             max_in_flight_samples_per_worker=4 * cfg.model["batch_size"],
-        )
+        ).batch(cfg.model["batch_size"])
         for table_name in cfg.model["replay_tables"]
     ]
     cfg.redis.set(
@@ -214,3 +215,4 @@ if __name__ == "__main__":
         train_loop(cfg)
     finally:
         cfg.redis.set("done", "1")
+        cfg.redis.delete("wandb_id")

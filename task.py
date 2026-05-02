@@ -120,7 +120,7 @@ def get_task(server: "TaskServer") -> Task:
     if server.warm_up:
         return Task(
             launch_strategy=LaunchStrategy.uniform_jittered(
-                num_cars=20, mps_range=(0.5, 1.0)
+                num_cars=50, mps_range=(0.5, 1.0)
             ),
             random_policy=True,
             table_name="1v0",
