@@ -190,7 +190,7 @@ def rollout_loop(cfg: "Config"):
 
 def main():
     logging.info("Initializing Genesis and setting up the scene...")
-    gs.init()
+    gs.init(backend=gs.cpu, performance_mode=True)
 
     cfg = Config()
     rollout_loop(cfg)

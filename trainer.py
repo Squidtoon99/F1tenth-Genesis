@@ -100,9 +100,7 @@ def train_loop(cfg: "Config"):
                     min_size_to_sample=(
                         cfg.model["minimum_train_samples"] if pos == 0 else 0
                     ),
-                    error_buffer=2
-                    * cfg.model["batch_size"]
-                    * cfg.model["update_to_data_ratio"],
+                    error_buffer=2 * cfg.model["batch_size"],
                 ),
                 signature=signature,
             )

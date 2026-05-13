@@ -146,6 +146,11 @@ def obs_future_track_points(
     return all_ego.reshape(batch, -1)
 
 
+def obs_tyre_slip(step_state: dict[str, Any]) -> torch.Tensor:
+    slip = step_state["tyre_slip"]
+    return slip
+
+
 def build_observation(
     num_obs: int,
     num_envs: int,

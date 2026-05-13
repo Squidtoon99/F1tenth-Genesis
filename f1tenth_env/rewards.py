@@ -150,24 +150,24 @@ def reward_tyre_slip_penalty(
 
     wheel_state = step_state["wheel_state"]
     # --- pull state ---
-    wheel_lin_vel_world = wheel_state["motion_link_vel"]  # (N, 4, 3)
-    wheel_frame_quat_world = wheel_state["frame_quat"]  # (N, 4, 4)
+    lin_vel_local = wheel_state["motion_link_vel"]  # (N, 4, 3)
+    # wheel_frame_quat_world = wheel_state["frame_quat"]  # (N, 4, 4)
     spin_rate = wheel_state["dof_vel"]  # (N, n_dofs)
 
     # --- world -> non-spinning local slip frame ---
-    lin_vel_local = gu.inv_transform_by_quat(
-        wheel_lin_vel_world, wheel_frame_quat_world
-    )
+    # lin_vel_local = gu.inv_transform_by_quat(
+    #     wheel_lin_vel_world, wheel_frame_quat_world
+    # )
 
     v_fwd = lin_vel_local[:, :, 0]
     v_lat = lin_vel_local[:, :, 1]
 
     # Optional sign overrides in case URDF axis conventions are inverted.
-    front_sign = float(reward_cfg.get("slip_forward_sign_front", 1.0))
-    rear_sign = float(reward_cfg.get("slip_forward_sign_rear", 1.0))
-    v_fwd = v_fwd.clone()
-    v_fwd[:, :2] = rear_sign * v_fwd[:, :2]
-    v_fwd[:, 2:] = front_sign * v_fwd[:, 2:]
+    # front_sign = float(reward_cfg.get("slip_forward_sign_front", 1.0))
+    # rear_sign = float(reward_cfg.get("slip_forward_sign_rear", 1.0))
+    # v_fwd = v_fwd.clone()
+    # v_fwd[:, :2] = rear_sign * v_fwd[:, :2]
+    # v_fwd[:, 2:] = front_sign * v_fwd[:, 2:]
 
     # --- slip calculations ---
     eps = float(reward_cfg.get("slip_eps", 0.1))

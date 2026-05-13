@@ -23,3 +23,10 @@ checkpoints
 policy_cache
 
 wandb
+
+scripts/logs
+
+.out
+.err
+
+.ipynb

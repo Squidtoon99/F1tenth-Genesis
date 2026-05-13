@@ -87,7 +87,7 @@ DEFAULT_CONFIG = {
         "reward_scales": {
             "progress": 3.4,
             "oob_penalty": 1.2,
-            "tyre_slip_penalty": 0.0,
+            "tyre_slip_penalty": 0.05,
         },
     },
     "model": {
@@ -100,7 +100,7 @@ DEFAULT_CONFIG = {
         "batches_per_epoch": 6000,
         "replay_buffer_limit": 10**7,
         "batch_size": 1024,
-        "update_to_data_ratio": 4,
+        "update_to_data_ratio": 0.01,
     },
 }
 
