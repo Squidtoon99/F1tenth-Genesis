@@ -104,6 +104,17 @@ class F1tenthEnv:
             )
         )
 
+        if self.env_cfg.get("opponent_strategy") is not None:
+            self.opponent = self.scene.add_entity(
+                gs.morphs.URDF(
+                    file=URDF_PATH,
+                    pos=self.env_cfg["car_spawn_pos"],
+                    euler=self.env_cfg["car_spawn_rot"],
+                )
+            )
+        else:
+            self.opponent = None
+
         if self.scene.viewer and show_viewer:
             self.scene.viewer.follow_entity(self.car)
 
@@ -144,6 +155,11 @@ class F1tenthEnv:
         self.base_ang_vel = torch.zeros(
             (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
         )
+
+        self.base_lin_acc = torch.zeros(
+            (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+        )
+
         self.base_pos = torch.empty(
             (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
         )
@@ -344,6 +360,12 @@ class F1tenthEnv:
                 car.set_pos(pos, envs_idx=env_ids)
                 car.set_quat(quat, envs_idx=env_ids, zero_velocity=True, relative=False)
 
+                if self.opponent is not None:
+                    opp_pos, opp_quat = self._sample_track_spawn(env_ids)
+                    self.opponent.set_pos(opp_pos, envs_idx=env_ids, relative=False)
+                    self.opponent.set_quat(
+                        opp_quat, envs_idx=env_ids, zero_velocity=True, relative=False
+                    )
         # Always reset speed even on eval laps
         reset_speed = self._apply_reset_speed(env_ids)
         return reset_speed, preserve_buffers
@@ -378,6 +400,14 @@ class F1tenthEnv:
         car = self.car  # type: Any
         car.control_dofs_position(steer_targets, self.steer_dofs, envs_idx=env_ids)
         car.control_dofs_velocity(wheel_omegas, self.wheel_dofs, envs_idx=env_ids)
+
+        if self.opponent is not None:
+            self.opponent.control_dofs_position(
+                steer_targets, self.steer_dofs, envs_idx=env_ids
+            )
+            self.opponent.control_dofs_velocity(
+                wheel_omegas, self.wheel_dofs, envs_idx=env_ids
+            )
         return torch.from_numpy(sampled_speed).to(device=self.device, dtype=gs.tc_float)
 
     def _get_step_state(self) -> dict[str, Any]:
@@ -390,17 +420,15 @@ class F1tenthEnv:
                 cache_id=self.track_cache_id,
             )
 
-            self._step_state["wheel_state"] = {
-                # Motion velocity is measured at wheel links, but the local frame
-                # for slip uses non-spinning references (base for rear, hinges for front).
-                "motion_link_vel": self.car.get_links_vel(
+            self._step_state["wheel_state"] = dict(
+                motion_link_vel=self.car.get_links_vel(
                     links_idx_local=self.slip_motion_link_idx, ref="link_com"
                 ),
-                "frame_quat": self.car.get_links_quat(
+                frame_quat=self.car.get_links_quat(
                     links_idx_local=self.slip_frame_link_idx
                 ),
-                "dof_vel": self.car.get_dofs_velocity(dofs_idx_local=self.wheel_dofs),
-            }
+                dof_vel=self.car.get_dofs_velocity(dofs_idx_local=self.wheel_dofs),
+            )
             self._step_state_valid = True
         return self._step_state
 
@@ -412,6 +440,9 @@ class F1tenthEnv:
         self.base_lin_vel = gu.inv_transform_by_quat(car.get_vel(), car.get_quat())
         self.base_ang_vel = gu.inv_transform_by_quat(car.get_ang(), car.get_quat())
 
+        self.base_lin_acc = gu.inv_transform_by_quat(
+            car.get_links_acc()[:, 0, :], car.get_quat()
+        )  # base link acceleration
         invalidate_step_caches(self.track_state)
         self._step_state_valid = False
 
@@ -422,6 +453,7 @@ class F1tenthEnv:
             num_envs=self.num_envs,
             base_lin_vel=self.base_lin_vel,
             base_ang_vel=self.base_ang_vel,
+            base_lin_acc=self.base_lin_acc,
             last_actions=self.last_actions,
             base_pos=self.base_pos,
             base_quat=self.base_quat,

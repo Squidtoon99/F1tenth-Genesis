@@ -11,7 +11,6 @@ import torch
 from config import Config
 from eval_worker import process_eval_data
 from policy import Policy, UniformRandomPolicy, CenterFollowPolicy
-from replay import ReplayServer
 from task import LaunchStrategy, Task, get_task
 from f1tenth_env import F1tenthEnv
 import rerun as rr
@@ -108,12 +107,13 @@ def _log_observation_fields(agent_path: str, obs: torch.Tensor) -> None:
 
     lin_vel = obs_cpu[0:2]
     ang_vel = obs_cpu[2:3]
-    _last_action = obs_cpu[3:5]
-    track_progress = obs_cpu[5:7]
-    centerline_angle = obs_cpu[7]
-    centerline_distance = obs_cpu[8]
-    wall_contact_flag = obs_cpu[9]
-    future_pts_flat = obs_cpu[10:]
+    _lin_acc = obs_cpu[3:5]
+    _last_action = obs_cpu[5:7]
+    track_progress = obs_cpu[7:9]
+    centerline_angle = obs_cpu[9]
+    centerline_distance = obs_cpu[10]
+    wall_contact_flag = obs_cpu[11]
+    future_pts_flat = obs_cpu[12:]
 
     rr.log(
         f"{agent_path}/obs/linear_velocity",
@@ -231,7 +231,7 @@ def rollout_loop(cfg: "Config"):
             action_dim=cfg.env["num_actions"],
             action_clip=cfg.env["clip_actions"],
         )
-        agent_policy.maybe_refresh(force=True, version=500)
+        agent_policy.maybe_refresh(force=True)
 
     num_envs = int(task.launch_strategy.data.get("num_cars", 20))
     env = F1tenthEnv(

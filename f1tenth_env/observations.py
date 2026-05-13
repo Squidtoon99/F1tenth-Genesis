@@ -146,11 +146,17 @@ def obs_future_track_points(
     return all_ego.reshape(batch, -1)
 
 
+def obs_tyre_slip(step_state: dict[str, Any]) -> torch.Tensor:
+    slip = step_state["tyre_slip"]
+    return slip
+
+
 def build_observation(
     num_obs: int,
     num_envs: int,
     base_lin_vel: torch.Tensor,
     base_ang_vel: torch.Tensor,
+    base_lin_acc: torch.Tensor,
     last_actions: torch.Tensor,
     base_pos: torch.Tensor,
     base_quat: torch.Tensor,
@@ -163,6 +169,7 @@ def build_observation(
         (
             base_lin_vel[:, :2],
             base_ang_vel[:, 2:3],
+            base_lin_acc[:, :2],
             last_actions,
             obs_track_progress(centerline, base_pos, device),
             obs_centerline_angle(step_state, base_quat),

@@ -9,12 +9,17 @@ from typing import Any
 # flake8: noqa: F401
 import numpy as np
 import torch
+import tensorflow as tf
+
+# Keep gpu for pytorch
+tf.config.set_visible_devices([], "GPU")
 from config import Config
 from policy import Policy, UniformRandomPolicy
-from replay import ReplayServer
+from reverb import Client
 from task import TaskServer, get_task
 from f1tenth_env import F1tenthEnv
 from eval_worker import process_eval_data
+from collections import deque
 
 try:
     from dotenv import load_dotenv
@@ -32,17 +37,28 @@ import wandb
 #     datefmt="%Y-%m-%d %H:%M:%S",
 # )
 
+max_steps = 3000
+
 
 def rollout_loop(cfg: "Config"):
-    max_steps = int(os.getenv("COLLECTOR_STEPS", "5000"))
-    n_steps = cfg.model.get("n_step", 5)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(os.getenv("ROLLOUT_DIR", "outputs/random_rollouts")) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    replay_server = ReplayServer(cfg)
-
     task_server = TaskServer(cfg)
+    logging.info("Waiting for trainer to start...")
+    while task_server.wandb_id is None:
+        time.sleep(1)
+
+    wandb.init(
+        project="f1tenth-genesis",
+        config=cfg.dict(),
+        id=task_server.wandb_id,
+    )
+
+    replay_client = Client(
+        server_address=cfg.redis.get("replay_server_address") or "localhost:8000",
+    )
 
     # Waiting for trainer to start
     logging.info("Waiting for trainer to start...")
@@ -87,7 +103,9 @@ def rollout_loop(cfg: "Config"):
         )
 
         obs, _ = env.reset()
-        trajs = [[] for _ in range(num_envs)]  # list of trajectories for each agent
+        trajs = [
+            deque(maxlen=cfg.model["n_step"]) for _ in range(num_envs)
+        ]  # list of trajectories for each agent
         extras = []
         step = 0
         for step in range(max_steps):
@@ -100,16 +118,44 @@ def rollout_loop(cfg: "Config"):
                         "obs": obs[agent_id].detach().cpu(),
                         "action": actions[agent_id].detach().cpu(),
                         "reward": reward[agent_id].item(),
-                        "next_obs": next_obs[agent_id].detach().cpu(),
                         "done": agent_done,
                     }
                 )
                 if task.is_eval:
                     extras.append(extra)
 
-            if step + 1 >= n_steps and task.table_name:
+            if step + 1 >= cfg.model["n_step"] and task.table_name:
                 # Construct N-Step subtrajectory if data collection task
-                replay_server.write_trajectories(task.table_name, [traj[-n_steps:] for traj in trajs])
+                for agent_id in range(num_envs):
+                    # skip if not enough data or if trajectory ended before n steps
+                    if len(trajs[agent_id]) < cfg.model["n_step"]:
+                        continue
+                    with replay_client.trajectory_writer(
+                        num_keep_alive_refs=cfg.model["n_step"]
+                    ) as writer:
+                        for t in trajs[agent_id]:
+                            writer.append(
+                                data={
+                                    "obs": t["obs"].cpu().numpy().astype(np.float32),
+                                    "action": t["action"]
+                                    .cpu()
+                                    .numpy()
+                                    .astype(np.float32),
+                                    "reward": np.array([t["reward"]], dtype=np.float32),
+                                    "done": np.array([t["done"]], dtype=np.float32),
+                                },
+                            )
+                        writer.create_item(
+                            table=task.table_name,
+                            priority=1.0,
+                            trajectory={
+                                k: writer.history[k][-cfg.model["n_step"] :]
+                                for k in ["obs", "action", "reward", "done"]
+                            },
+                        )
+                    if trajs[agent_id][-1]["done"]:
+                        trajs[agent_id].clear()  # Clear trajectory on episode end
+
             obs = next_obs
 
             if task.time_out_fn(step, obs):
@@ -131,12 +177,20 @@ def rollout_loop(cfg: "Config"):
                         "lap_times",
                         {f"policy_{agent_policy.policy['version']}": lap_time},
                     )
-        logging.info(f"Task finished after {step+1} steps. Resetting environment...")
+
+            task_server.eval_workers_available = (
+                True  # ensure only one eval worker is running at a time
+            )
+
+        logging.info(
+            f"Task finished after %d steps. Resetting environment...", step + 1
+        )
         env.close()
+
 
 def main():
     logging.info("Initializing Genesis and setting up the scene...")
-    gs.init()
+    gs.init(backend=gs.cpu, performance_mode=True)
 
     cfg = Config()
     rollout_loop(cfg)

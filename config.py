@@ -36,7 +36,7 @@ class RedisWrapper:
 
 DEFAULT_CONFIG = {
     "obs": {
-        "num_obs": 370,
+        "num_obs": 372,
         "obs_scales": {
             "lin_vel": 1.0,
             "ang_vel": 1.0,
@@ -87,7 +87,7 @@ DEFAULT_CONFIG = {
         "reward_scales": {
             "progress": 3.4,
             "oob_penalty": 1.2,
-            "tyre_slip_penalty": 0.0,
+            "tyre_slip_penalty": 0.05,
         },
     },
     "model": {
@@ -95,10 +95,12 @@ DEFAULT_CONFIG = {
         "num_quantiles": 32,
         "rew_gamma": 0.9896,
         "n_step": 7,
-        "replay_tables": ["1v0", "1v1", "mistake_learning"],
+        "replay_tables": ["1v0"],  # "1v1", "mistake_learning"],
         "minimum_train_samples": 40000,
         "batches_per_epoch": 6000,
+        "replay_buffer_limit": 10**7,
         "batch_size": 1024,
+        "update_to_data_ratio": 0.01,
     },
 }
 

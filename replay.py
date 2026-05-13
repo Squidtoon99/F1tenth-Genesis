@@ -1,58 +1,65 @@
-import json
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, List, Optional
 
+import tensorflow as tf
 import torch
-
+from torch.utils import dlpack
+import reverb
 
 if TYPE_CHECKING:
     from config import Config
 
 
-class ReplayServer:
+def _tf_to_torch(x, device: Optional[torch.device] = None) -> torch.Tensor:
+    try:
+        t = dlpack.from_dlpack(tf.experimental.dlpack.to_dlpack(x))
+    except Exception:
+        t = torch.from_numpy(x.numpy())
+    if device is not None:
+        t = t.to(device, non_blocking=True)
+    return t
 
-    def __init__(self, cfg: "Config"):
-        # Initialize connection to Redis or other storage backend here
-        self.redis_client = cfg.redis
-        self.cfg = cfg
-        self.gamma = cfg.model.get("rew_gamma", 0.99)
-        self.n_step = cfg.model.get("n_step", 5)
 
-    def compute_n_step_returns(self, trajectory):
-        R = 0.0
-        done = False
-        for i in range(self.n_step):
-            r = trajectory[i]["reward"]
-            d = trajectory[i]["done"]
-            R += (self.gamma**i) * r
-            if d:
-                done = True
-                break
+def sample_data(
+    table_datasets: List[reverb.TrajectoryDataset],
+    cfg: "Config",
+    device: Optional[torch.device] = None,
+) -> dict[str, torch.Tensor]:
+    discount = cfg.model["rew_gamma"]
+    n_step = cfg.model["n_step"]
 
-        obs = trajectory[0]["obs"]
-        action = trajectory[0]["action"]
-        next_obs = trajectory[i]["next_obs"] # type: ignore
-        return obs, action, R, next_obs, done
+    total = []
 
-    @staticmethod
-    def _encode_for_redis(value):
-        if isinstance(value, torch.Tensor):
-            value = value.detach().cpu().tolist()
-        return json.dumps(value)
+    for dataset in table_datasets:
+        sample = next(iter(dataset))
+        data = sample.data
 
-    def write_trajectories(self, table_name: str, trajectories: list):
-        pipe = self.redis_client.pipeline(transaction=False)
-        for traj in trajectories:
-            obs, action, rew, next_obs, done = self.compute_n_step_returns(traj)
-            pipe.xadd(  # type: ignore
-                self.cfg.rkey("replay_buffer"),
-                {
-                    "table_name": table_name,
-                    "obs": self._encode_for_redis(obs),
-                    "action": self._encode_for_redis(action),
-                    "reward": str(float(rew)),
-                    "next_obs": self._encode_for_redis(next_obs),
-                    "done": str(int(done)),
-                },
-                maxlen=1_000_000,
-            )
-        pipe.execute()  # type: ignore
+        batch = {
+            "obs": _tf_to_torch(data["obs"], device).float(),
+            "action": _tf_to_torch(data["action"], device).float(),
+            "reward": _tf_to_torch(data["reward"], device).float(),
+            "done": _tf_to_torch(data["done"], device).float(),
+        }
+        total.append(batch)
+
+    sub_traj_batches = {
+        key: torch.cat([batch[key] for batch in total], dim=0)
+        for key in total[0].keys()
+    }
+
+    reward = sub_traj_batches["reward"]
+    done = sub_traj_batches["done"]
+
+    discounting = torch.pow(
+        torch.tensor(discount, dtype=reward.dtype, device=reward.device),
+        torch.arange(n_step, dtype=reward.dtype, device=reward.device),
+    ).view(1, n_step, 1)
+
+    discounted_reward = torch.sum(reward * discounting, dim=1)  # [B, 1]
+    return {
+        "obs": sub_traj_batches["obs"][:, 0, :],
+        "action": sub_traj_batches["action"][:, 0, :],
+        "reward": discounted_reward,
+        "next_obs": sub_traj_batches["obs"][:, -1, :],
+        "done": done[:, -1, :],
+    }

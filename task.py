@@ -74,6 +74,14 @@ class TaskServer:
         self.redis.set("needs_eval", str(value))
 
     @property
+    def eval_workers_available(self) -> bool:
+        return self.redis.get("eval_workers_available") == str(True)
+
+    @eval_workers_available.setter
+    def eval_workers_available(self, value: bool):
+        self.redis.set("eval_workers_available", str(value))
+
+    @property
     def mistake_learning_tasks(self) -> List[str]:
         return []
 
@@ -112,17 +120,17 @@ def get_task(server: "TaskServer") -> Task:
     if server.warm_up:
         return Task(
             launch_strategy=LaunchStrategy.uniform_jittered(
-                num_cars=20, mps_range=(0.5, 1.0)
+                num_cars=50, mps_range=(0.5, 1.0)
             ),
             random_policy=True,
             table_name="1v0",
             time_out_fn=lambda steps, obs: steps >= MAX_STEPS,
             is_eval=False,
         )
-    elif server.needs_eval:
+    elif server.needs_eval and server.eval_workers_available:
         # WTF is a race condition?
         server.needs_eval = False
-
+        server.eval_workers_available = False
         return Task(
             launch_strategy=LaunchStrategy.eval_launch(),
             random_policy=False,
