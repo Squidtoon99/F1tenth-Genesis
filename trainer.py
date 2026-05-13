@@ -181,9 +181,8 @@ def train_loop(cfg: "Config"):
                 )
                 task_server.warm_up = False
 
-                if current_version <= 5 or current_version % 5 == 0:
-                    task_server.needs_eval = True
-                    logging.info("Signaled workers to run evaluation episodes.")
+                task_server.needs_eval = True
+                logging.info("Signaled workers to run evaluation episodes.")
     except KeyboardInterrupt:
         pass
     replay_server.stop()
