@@ -137,6 +137,39 @@ def reward_oob_penalty(
     return -k_oob * oob_dist
 
 
+def reward_speed(
+    step_state: dict[str, Any], reward_cfg: dict[str, Any]
+) -> torch.Tensor:
+    """
+    Forward (track-aligned) speed reward, capped at a target speed.
+
+    Rewards velocity projected onto the track tangent (so spinning/sliding does
+    not pay), normalized to [0, 1] and saturated at speed_target_mps. The cap
+    keeps the agent below the unstable high-speed spin-out regime instead of
+    letting it farm raw speed.
+    """
+    v_xy = step_state["base_lin_vel"][:, :2]
+    seg_dir = step_state["frenet"]["seg_dir"]
+    seg_dir = seg_dir / torch.linalg.norm(seg_dir, dim=-1, keepdim=True).clamp_min(1e-6)
+    v_long = (v_xy * seg_dir).sum(dim=-1)
+
+    target = float(reward_cfg.get("speed_target_mps", 3.0))
+    return torch.clamp(v_long, min=0.0, max=target) / target
+
+
+def reward_smoothness_penalty(
+    step_state: dict[str, Any], reward_cfg: dict[str, Any]
+) -> torch.Tensor:
+    """Penalize large action changes (jerk) to discourage bang-bang control."""
+    actions = step_state.get("actions")
+    last_actions = step_state.get("last_actions")
+    if actions is None or last_actions is None:
+        ref = step_state["boundary"]["ey"].reshape(-1)
+        return torch.zeros_like(ref)
+    delta = actions - last_actions
+    return -torch.sum(delta * delta, dim=-1)
+
+
 def reward_tyre_slip_penalty(
     step_state: dict[str, Any],
     reward_cfg: dict[str, Any],
@@ -182,18 +215,30 @@ def compute_rewards(
     progress = reward_progress(step_state, reward_cfg)
     oob_penalty = reward_oob_penalty(step_state, reward_cfg)
     tyre_slip_penalty = reward_tyre_slip_penalty(step_state, reward_cfg)
-    progress = torch.where(oob_penalty < 0.0, torch.zeros_like(progress), progress)
+    speed = reward_speed(step_state, reward_cfg)
+    smoothness_penalty = reward_smoothness_penalty(step_state, reward_cfg)
 
-    progress *= reward_cfg["reward_scales"]["progress"]
-    oob_penalty *= reward_cfg["reward_scales"]["oob_penalty"]
-    tyre_slip_penalty *= reward_cfg["reward_scales"]["tyre_slip_penalty"]
+    off_track = oob_penalty < 0.0
+    progress = torch.where(off_track, torch.zeros_like(progress), progress)
+    speed = torch.where(off_track, torch.zeros_like(speed), speed)
+
+    scales = reward_cfg["reward_scales"]
+    progress *= scales["progress"]
+    oob_penalty *= scales["oob_penalty"]
+    tyre_slip_penalty *= scales["tyre_slip_penalty"]
+    speed *= scales.get("speed", 0.0)
+    smoothness_penalty *= scales.get("smoothness", 0.0)
     last_terms: dict[str, torch.Tensor] = {
         "progress": progress.clone(),
         "oob_penalty": oob_penalty.clone(),
         "tyre_slip_penalty": tyre_slip_penalty.clone(),
+        "speed": speed.clone(),
+        "smoothness": smoothness_penalty.clone(),
     }
 
-    reward_buf += progress + oob_penalty + tyre_slip_penalty
+    reward_buf += (
+        progress + oob_penalty + tyre_slip_penalty + speed + smoothness_penalty
+    )
 
     reward_state["last_reward_terms"] = last_terms
     return reward_buf, step_state

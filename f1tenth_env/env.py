@@ -608,6 +608,9 @@ class F1tenthEnv:
 
     def _compute_rewards(self):
         step_state = self._get_step_state()
+        step_state["base_lin_vel"] = self.base_lin_vel
+        step_state["actions"] = self.actions
+        step_state["last_actions"] = self.last_actions
         self.reward_buf, self._step_state = compute_rewards(
             step_state=step_state,
             reward_cfg=self.reward_cfg,

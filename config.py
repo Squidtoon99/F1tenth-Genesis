@@ -37,10 +37,16 @@ class RedisWrapper:
 DEFAULT_CONFIG = {
     "obs": {
         "num_obs": 380,
+        # Scale unbounded physical channels into ~unit range (max_speed=15 ->
+        # ~3.0, a few rad/s of yaw -> ~1.0) so they don't dominate the obs vector.
         "obs_scales": {
-            "lin_vel": 1.0,
-            "ang_vel": 1.0,
+            "lin_vel": 0.2,
+            "ang_vel": 0.25,
+            "lin_acc": 0.1,
         },
+        # Hard clip on the assembled observation; a transient spin/contact blow-up
+        # can otherwise push obs_absmax into the hundreds and destabilize the critic.
+        "clip_obs": 10.0,
         "contact_margin_m": 0.08,
         "future_track_num_points": 60,
         "future_track_horizon_s": 6.0,
@@ -52,16 +58,15 @@ DEFAULT_CONFIG = {
         # control_dt = sim_dt * control_interval = 0.1s (10 Hz control). When
         # changing sim_dt, adjust control_interval inversely to keep control_dt
         # and episode_length semantics constant.
-        "control_interval": 20,
-        "sim_dt": 0.005,
+        "control_interval": 10,
+        "sim_dt": 0.01,
         # Tuned via scripts/sweep_physics_integration.py: every substep count
-        # 2..10 passes the physics_check stability gate (accel/top-speed/brake/
-        # lateral<=mu*g/upright/no-NaN) for normal upright driving. That sweep did
-        # NOT cover high-speed (~6+ m/s) boundary impacts/spins, which overwhelm the
-        # Newton contact solve at substeps=4 and yield NaN rigid state ("invalid"
-        # terminations). Raised to 8 for a stiffer high-speed contact solve; if NaNs
-        # persist under fast wall contact, also lower sim_dt (0.01 -> 0.005).
-        "sim_substeps": 8,
+        # 2..10 passes the physics_check stability gate for normal upright driving.
+        # NOTE: high-speed (>~4 m/s) spin-outs still NaN the wheel/plane contact
+        # solve regardless of substeps/sim_dt (an effective 0.6ms step still fails),
+        # so that instability is handled via obs clipping + speed-capped reward +
+        # fast OOB termination, not by shrinking the integration step.
+        "sim_substeps": 4,
         "solver_iterations": 50,
         "solver_ls_iterations": 50,
         "show_fps": False,
@@ -72,7 +77,9 @@ DEFAULT_CONFIG = {
         "clip_actions": 1.0,
         "simulate_action_latency": True,
         "term_oob_margin_m": 0.15,
-        "term_oob_max_consecutive": 15,
+        # End an excursion fast so the car can't plow off-track and spin out into a
+        # NaN contact state before terminating (was 15 = 1.5s at 10 Hz control).
+        "term_oob_max_consecutive": 2,
         "term_speed_threshold": 0.2,
         "term_not_moving_time_s": 2.0,
         "term_not_moving_min_ds": 1e-3,
@@ -115,10 +122,17 @@ DEFAULT_CONFIG = {
         "oob_margin_m": 0.5,
         "oob_k": 5.0,
         "oob_dist_cap_m": 1.0,
+        # Track-aligned speed reward saturates here; kept below the ~4 m/s spin-out
+        # regime so the agent is pushed to move without reaching the NaN envelope.
+        "speed_target_mps": 3.0,
         "reward_scales": {
             "progress": 5.0,
             "oob_penalty": 0.6,
             "tyre_slip_penalty": 0.05,
+            # Dense anti-crawl incentive: rewards forward motion up to the target.
+            "speed": 1.0,
+            # Mild jerk penalty to curb bang-bang throttle/steer.
+            "smoothness": 0.05,
         },
     },
     "model": {

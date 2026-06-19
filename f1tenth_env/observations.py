@@ -150,10 +150,15 @@ def build_observation(
     step_state: dict[str, Any],
     device: torch.device,
 ) -> torch.Tensor:
+    obs_scales = obs_cfg.get("obs_scales", {})
+    lin_vel_scale = float(obs_scales.get("lin_vel", 1.0))
+    ang_vel_scale = float(obs_scales.get("ang_vel", 1.0))
+    lin_acc_scale = float(obs_scales.get("lin_acc", 1.0))
+
     components = (
-        base_lin_vel[:, :2],
-        base_ang_vel[:, 2:3],
-        base_lin_acc[:, :2],
+        base_lin_vel[:, :2] * lin_vel_scale,
+        base_ang_vel[:, 2:3] * ang_vel_scale,
+        base_lin_acc[:, :2] * lin_acc_scale,
         last_actions,
         obs_track_progress(step_state, device),
         obs_centerline_angle(step_state, base_quat),
@@ -195,5 +200,13 @@ def build_observation(
             f"expected num_obs={num_obs}, got {offset}. "
             "Check obs_cfg['num_obs'] and observation component sizes."
         )
+
+    # Final safety net: bound the whole observation so a transient physics
+    # blow-up (e.g. a high-speed spin sending ang_vel/lin_acc or speed-scaled
+    # future-track points to huge magnitudes) can never feed extreme values into
+    # the networks. Disabled when clip_obs <= 0.
+    clip_obs = float(obs_cfg.get("clip_obs", 0.0))
+    if clip_obs > 0.0:
+        obs = torch.clamp(obs, min=-clip_obs, max=clip_obs)
 
     return obs

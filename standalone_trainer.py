@@ -569,14 +569,16 @@ def main():
 
                 log.info(
                     "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
-                    "progress=%.4f oob_penalty=%.4f tyre_slip=%.4f | "
-                    "nstep_buf_reward=%.4f mean_Q=%.4f",
+                    "progress=%.4f speed=%.4f oob_penalty=%.4f tyre_slip=%.4f "
+                    "smooth=%.4f | nstep_buf_reward=%.4f mean_Q=%.4f",
                     diag.mean("reward/step"),
                     diag.vmin("reward/step"),
                     diag.vmax("reward/step"),
                     diag.mean("reward_term/progress"),
+                    diag.mean("reward_term/speed"),
                     diag.mean("reward_term/oob_penalty"),
                     diag.mean("reward_term/tyre_slip_penalty"),
+                    diag.mean("reward_term/smoothness"),
                     nstep_buf_reward_mean,
                     mean_q,
                 )
@@ -618,11 +620,15 @@ def main():
                             "reward/total_min": diag.vmin("reward/step"),
                             "reward/total_max": diag.vmax("reward/step"),
                             "reward/progress": diag.mean("reward_term/progress"),
+                            "reward/speed": diag.mean("reward_term/speed"),
                             "reward/oob_penalty": diag.mean(
                                 "reward_term/oob_penalty"
                             ),
                             "reward/tyre_slip_penalty": diag.mean(
                                 "reward_term/tyre_slip_penalty"
+                            ),
+                            "reward/smoothness": diag.mean(
+                                "reward_term/smoothness"
                             ),
                             "env/speed_xy": diag.mean("metric/speed_xy"),
                             "env/lateral_error": diag.mean("metric/lateral_error"),
