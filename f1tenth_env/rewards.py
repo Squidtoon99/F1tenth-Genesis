@@ -2,7 +2,7 @@ from typing import Any
 
 import torch
 import genesis as gs
-import genesis.utils.geom as gu
+from .car import compute_tyre_slip
 from .utils import compute_oob_from_boundary_state
 
 
@@ -140,48 +140,15 @@ def reward_tyre_slip_penalty(
     reward_cfg: dict[str, Any],
 ) -> torch.Tensor:
     """
-    Minimal MVP tyre-slip penalty (no step_state, no extra structure).
-
-    Conventions:
-    - wheel order is [left_rear, right_rear, left_front, right_front]
-    - motion velocity is sampled at wheel links
-    - local frame is non-spinning: base for rear, steering hinges for front
+    Tyre-slip penalty using per-wheel slip ratio and angle.
     """
-
     wheel_state = step_state["wheel_state"]
-    # --- pull state ---
-    lin_vel_local = wheel_state["motion_link_vel"]  # (N, 4, 3)
-    # wheel_frame_quat_world = wheel_state["frame_quat"]  # (N, 4, 4)
-    spin_rate = wheel_state["dof_vel"]  # (N, n_dofs)
-
-    # --- world -> non-spinning local slip frame ---
-    # lin_vel_local = gu.inv_transform_by_quat(
-    #     wheel_lin_vel_world, wheel_frame_quat_world
-    # )
-
-    v_fwd = lin_vel_local[:, :, 0]
-    v_lat = lin_vel_local[:, :, 1]
-
-    # Optional sign overrides in case URDF axis conventions are inverted.
-    # front_sign = float(reward_cfg.get("slip_forward_sign_front", 1.0))
-    # rear_sign = float(reward_cfg.get("slip_forward_sign_rear", 1.0))
-    # v_fwd = v_fwd.clone()
-    # v_fwd[:, :2] = rear_sign * v_fwd[:, :2]
-    # v_fwd[:, 2:] = front_sign * v_fwd[:, 2:]
-
-    # --- slip calculations ---
     eps = float(reward_cfg.get("slip_eps", 0.1))
     wheel_radius = float(reward_cfg.get("wheel_radius_m", 0.05))
 
-    slip_angle = torch.atan2(v_lat, torch.abs(v_fwd).clamp_min(eps))
-
-    wheel_speed = wheel_radius * spin_rate
-    denom = torch.maximum(torch.abs(wheel_speed), torch.abs(v_fwd)).clamp_min(eps)
-    slip_ratio = (wheel_speed - v_fwd) / denom
-
-    # --- Sophy-style penalty ---
-    slip_angle_mag = torch.abs(slip_angle)
-    slip_ratio_mag = torch.clamp(torch.abs(slip_ratio), max=1.0)
+    slip = compute_tyre_slip(wheel_state, wheel_radius=wheel_radius, slip_eps=eps)
+    slip_ratio_mag = torch.clamp(torch.abs(slip[:, :4]), max=1.0)
+    slip_angle_mag = torch.abs(slip[:, 4:])
 
     per_wheel = slip_ratio_mag * slip_angle_mag
     penalty = -torch.sum(per_wheel, dim=1)

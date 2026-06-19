@@ -225,6 +225,43 @@ def build_track_cache(
     }
 
 
+def build_obs_track_cache(
+    track_state: dict[str, Any],
+    device: torch.device,
+) -> dict[str, Any]:
+    """Precompute (once) the open-polyline tensors used by future-track obs.
+
+    These are track invariants (centerline, segment vectors/lengths, cumulative
+    arclength); recomputing and re-uploading them every step is wasteful.
+    """
+    cache = track_state.get("obs_track_cache")
+    if cache is not None:
+        return cache
+
+    centerline_t = torch.as_tensor(
+        track_state["centerline"], device=device, dtype=gs.tc_float
+    )
+    seg = centerline_t[1:] - centerline_t[:-1]
+    seg_len = torch.linalg.vector_norm(seg, dim=-1)
+    cumlen = torch.cat(
+        [
+            torch.zeros(1, device=device, dtype=gs.tc_float),
+            torch.cumsum(seg_len, dim=0),
+        ],
+        dim=0,
+    )
+    cache = {
+        "centerline_t": centerline_t,
+        "seg": seg,
+        "seg_len": seg_len,
+        "cumlen": cumlen,
+        "total_len": cumlen[-1].clamp(min=1e-6),
+        "n": int(centerline_t.shape[0]),
+    }
+    track_state["obs_track_cache"] = cache
+    return cache
+
+
 def frenet_projection_cached(
     base_pos: torch.Tensor,
     episode_steps_buf: torch.Tensor,
@@ -243,13 +280,9 @@ def frenet_projection_cached(
         )
         track_state["track_geom_cache"][cache_id] = geom
 
-    step_key = episode_steps_buf.detach().clone()
-    step_entry = track_state["frenet_step_cache"].get(cache_id)
-    if step_entry is not None:
-        last_step = step_entry["step"]
-        if last_step.shape == step_key.shape and torch.equal(last_step, step_key):
-            return step_entry["data"]
-
+    # Within a step the env caches the full step_state (see ``_step_state_valid``)
+    # and clears it once per step, so an extra GPU-syncing equality check here
+    # would never hit; the projection is computed exactly once per step.
     pos = base_pos[:, :2].to(device=device, dtype=gs.tc_float)
     batch = pos.shape[0]
 
@@ -303,7 +336,6 @@ def frenet_projection_cached(
         "L": length,
     }
 
-    track_state["frenet_step_cache"][cache_id] = {"step": step_key, "data": data}
     return data
 
 
@@ -384,9 +416,11 @@ def build_step_state(
         track_state["w_tr_left_torch"],
         track_state["w_tr_right_torch"],
     )
+    obs_track = build_obs_track_cache(track_state, device)
     return {
         "frenet": frenet_state,
         "boundary": boundary_state,
+        "obs_track": obs_track,
     }
 
 

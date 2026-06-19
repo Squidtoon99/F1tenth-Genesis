@@ -36,7 +36,7 @@ class RedisWrapper:
 
 DEFAULT_CONFIG = {
     "obs": {
-        "num_obs": 372,
+        "num_obs": 380,
         "obs_scales": {
             "lin_vel": 1.0,
             "ang_vel": 1.0,
@@ -52,6 +52,9 @@ DEFAULT_CONFIG = {
         "control_interval": 10,
         "sim_dt": 0.01,
         "sim_substeps": 10,
+        "solver_iterations": 50,
+        "solver_ls_iterations": 50,
+        "show_fps": False,
         "clip_actions": 1.0,
         "simulate_action_latency": True,
         "term_oob_margin_m": 0.15,
@@ -71,11 +74,24 @@ DEFAULT_CONFIG = {
             "left_rear_wheel_joint": 0.0,
             "right_rear_wheel_joint": 0.0,
         },
-        "max_speed": 10.0,  # m/s
-        "max_steer": 0.4189,  # radians
+        # Observation/reset throttle scaling only — longitudinal cap comes from power+drag.
+        "max_speed": 15.0,
+        "max_steer": 0.44,  # radians (alias for delta_max)
+        "delta_max": 0.44,  # radians
         "wheelbase": 0.325,
         "track_width": 0.20,
         "wheel_radius": 0.05,
+        "f_drive_max": 23.0,
+        "f_brake_max": 23.0,
+        "power_max": 255.0,
+        "k_drive_front": 0.5,
+        "t_delta": 0.1,
+        "c_roll": 0.0,
+        "dragcoeff": 0.075,
+        "tire_friction": 0.65,
+        "v_eps": 0.1,
+        "enable_aero_drag": True,
+        "drive_torque_sign": 1.0,
         "track": "Oschersleben",
     },
     "reward": {
@@ -158,9 +174,9 @@ class Config:
             try:
                 if value := self.redis.get(redis_key):
                     self._cfg[key] = {
-                        **json.loads(str(value)),
                         **DEFAULT_CONFIG[key],
-                    }  # Override defaults with Redis values
+                        **json.loads(str(value)),
+                    }
                     self.logger.info(f"Loaded config override for '{key}' from Redis.")
                 else:
                     self._cfg[key] = DEFAULT_CONFIG[key]
