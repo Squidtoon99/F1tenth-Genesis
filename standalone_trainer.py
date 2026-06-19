@@ -346,7 +346,9 @@ def select_device(device_arg: str) -> torch.device:
     return torch.device(device_arg)
 
 
-def build_models(cfg: dict, device: torch.device) -> tuple[Models, QRSACTrainer]:
+def build_models(
+    cfg: dict, device: torch.device, alpha: float = 0.1
+) -> tuple[Models, QRSACTrainer]:
     # Networks/optimizers stay float32 even when Genesis runs in precision="64"
     # (which flips torch's default dtype to float64); env outputs are bridged to
     # float32 at the boundary. Pin dtype explicitly so module creation under a
@@ -367,7 +369,7 @@ def build_models(cfg: dict, device: torch.device) -> tuple[Models, QRSACTrainer]
         device=device,
         gamma=cfg["model"]["rew_gamma"],
         n_step=cfg["model"]["n_step"],
-        alpha=0.1,
+        alpha=alpha,
         smooth_factor=0.005,
     )
     return models, trainer
@@ -403,6 +405,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--total-steps", type=int, default=500_000)
     parser.add_argument("--batch-size", type=int, default=cfg["model"]["batch_size"])
     parser.add_argument("--updates-per-step", type=int, default=1)
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.1,
+        help="SAC entropy coefficient (fixed). Higher keeps exploration alive "
+        "longer so the policy keeps trying fast maneuvers instead of collapsing "
+        "to a cautious crawl.",
+    )
     parser.add_argument("--min-train-samples", type=int, default=5000)
     parser.add_argument(
         "--n-step",
@@ -478,7 +488,7 @@ def main():
         enable_recording=False,
     )
 
-    models, trainer = build_models(cfg, device)
+    models, trainer = build_models(cfg, device, alpha=args.alpha)
     buffer = NStepReplayBuffer(
         capacity=args.buffer_capacity,
         obs_dim=obs_cfg["num_obs"],

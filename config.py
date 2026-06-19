@@ -81,9 +81,11 @@ DEFAULT_CONFIG = {
         "clip_actions": 1.0,
         "simulate_action_latency": True,
         "term_oob_margin_m": 0.15,
-        # End an excursion fast so the car can't plow off-track and spin out into a
-        # NaN contact state before terminating (was 15 = 1.5s at 10 Hz control).
-        "term_oob_max_consecutive": 2,
+        # Allow ~1.0s (10 steps at 10 Hz) off-track before terminating. The
+        # aggressive value (2) was a NaN band-aid; physics is now confirmed stable
+        # to ~15 m/s, so we give the policy room to recover from a fast excursion
+        # and learn cornering instead of being forced to crawl.
+        "term_oob_max_consecutive": 10,
         "term_speed_threshold": 0.2,
         "term_not_moving_time_s": 2.0,
         "term_not_moving_min_ds": 1e-3,
@@ -128,10 +130,12 @@ DEFAULT_CONFIG = {
         "oob_k": 5.0,
         "oob_dist_cap_m": 1.0,
         # Reference speed for the quadratic off-course speed factor 1+(v/v_ref)^2.
-        "oob_speed_ref_mps": 3.0,
-        # Track-aligned speed reward saturates here; kept below the ~4 m/s spin-out
-        # regime so the agent is pushed to move without reaching the NaN envelope.
-        "speed_target_mps": 3.0,
+        # Matched to the racing speed target so off-course is punished proportionate
+        # to racing speed rather than over-punishing any motion above a crawl.
+        "oob_speed_ref_mps": 6.0,
+        # Track-aligned speed reward saturates here. Physics is stable well past this
+        # (repro clean to ~15 m/s), so the cap is a racing target, not a NaN guard.
+        "speed_target_mps": 6.0,
         # Global downscale applied to the summed reward to keep per-step total and
         # value targets O(1) (progress alone was ~9/step before). Preserves the
         # relative balance between the individual reward terms.
@@ -140,8 +144,10 @@ DEFAULT_CONFIG = {
             "progress": 5.0,
             "oob_penalty": 0.6,
             "tyre_slip_penalty": 0.05,
-            # Dense anti-crawl incentive: rewards forward motion up to the target.
-            "speed": 1.0,
+            # Dense racing incentive: rewards track-aligned speed up to the target.
+            # Bumped from 1.0 -> 3.0 so speed is competitive with progress and the
+            # policy is pushed to race rather than crawl cautiously.
+            "speed": 3.0,
             # Mild jerk penalty to curb bang-bang throttle/steer.
             "smoothness": 0.05,
         },
