@@ -19,10 +19,13 @@ observation_builder:
 
 policy_inference:
   ros__parameters:
-    checkpoint_path: "/checkpoints/policy.pt"
+    # Empty -> random-init actor (plumbing demo). Mount a real .pt at /checkpoints to run trained policy.
+    checkpoint_path: ""
     state_dict_key: "actor"
     device: "cpu"
     deterministic: true
+    # Keep the random-init demo car moving in RViz (ignored when a checkpoint loads).
+    demo_throttle_floor: 0.55
 
 drive_command:
   ros__parameters:
@@ -38,7 +41,8 @@ evaluation:
     oob_margin_m: 0.0
     stuck_speed_mps: 0.2
     stuck_timeout_s: 3.0
+    # Match config/sim.yaml ego start pose (sx, sy, stheta).
     reset_x: 0.0
-    reset_y: 2.0
-    reset_yaw: -0.9
+    reset_y: 0.0
+    reset_yaw: 2.86
     auto_reset: true

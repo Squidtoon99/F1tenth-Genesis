@@ -113,19 +113,19 @@ class NStepReplayBuffer:
         )
         self.done = torch.zeros(capacity, device=device, dtype=torch.float32)
 
-        self.trajs = [deque(maxlen=n_step) for _ in range(num_envs)]
         self._gamma_powers = torch.tensor(
             [gamma**k for k in range(n_step)], device=device, dtype=torch.float32
         )
 
-    def _emit(self, obs0, action0, n_step_reward, next_obs_i, done_i):
-        self.obs[self.ptr] = obs0
-        self.action[self.ptr] = action0
-        self.reward[self.ptr] = n_step_reward
-        self.next_obs[self.ptr] = next_obs_i
-        self.done[self.ptr] = float(done_i)
-        self.ptr = (self.ptr + 1) % self.capacity
-        self.size = min(self.size + 1, self.capacity)
+        # Vectorized per-env n-step windows kept on device as circular buffers.
+        # All envs advance in lockstep, so a single write column index ``w_pos``
+        # is shared. ``w_len`` counts valid entries per env (reset to 0 on done).
+        self.w_obs = torch.zeros(num_envs, n_step, obs_dim, device=device, dtype=torch.float32)
+        self.w_act = torch.zeros(num_envs, n_step, act_dim, device=device, dtype=torch.float32)
+        self.w_rew = torch.zeros(num_envs, n_step, device=device, dtype=torch.float32)
+        self.w_len = torch.zeros(num_envs, device=device, dtype=torch.long)
+        self.w_pos = 0
+        self._arange_n = torch.arange(n_step, device=device)
 
     def add(
         self,
@@ -135,33 +135,45 @@ class NStepReplayBuffer:
         next_obs: torch.Tensor,
         dones: torch.Tensor,
     ):
-        for env_id in range(self.num_envs):
-            agent_done = bool(dones[env_id].item())
-            self.trajs[env_id].append(
-                {
-                    "obs": obs[env_id].detach(),
-                    "action": actions[env_id].detach(),
-                    "reward": rewards[env_id].item(),
-                    "done": agent_done,
-                }
-            )
+        """Vectorized n-step accumulation. Writes the current transition into each
+        env's circular window, emits completed n-step samples for all full windows
+        in a single batched scatter, then clears windows for done envs. The only
+        host sync is one ``nonzero`` per step (independent of ``num_envs``)."""
+        col = self.w_pos
+        self.w_obs[:, col] = obs.detach()
+        self.w_act[:, col] = actions.detach()
+        self.w_rew[:, col] = rewards.detach()
+        self.w_len = torch.clamp(self.w_len + 1, max=self.n_step)
+        self.w_pos = (col + 1) % self.n_step
 
-            if len(self.trajs[env_id]) == self.n_step:
-                traj = self.trajs[env_id]
-                rewards_t = torch.tensor(
-                    [t["reward"] for t in traj], device=self.device, dtype=torch.float32
-                )
-                n_step_reward = (rewards_t * self._gamma_powers).sum()
-                self._emit(
-                    traj[0]["obs"],
-                    traj[0]["action"],
-                    n_step_reward,
-                    next_obs[env_id].detach(),
-                    traj[-1]["done"],
-                )
+        # After advancing, column ``w_pos`` is the oldest entry of a full window;
+        # ``order`` lists columns oldest -> newest for the discounted sum.
+        oldest = self.w_pos
+        order = (oldest + self._arange_n) % self.n_step
+        n_step_reward = (self.w_rew[:, order] * self._gamma_powers).sum(dim=1)
+        obs0 = self.w_obs[:, oldest]
+        act0 = self.w_act[:, oldest]
+        done_f = dones.detach().to(torch.float32)
 
-            if agent_done:
-                self.trajs[env_id].clear()
+        emit_mask = self.w_len == self.n_step
+        idx = torch.nonzero(emit_mask, as_tuple=False).squeeze(-1)
+        n_emit = int(idx.numel())
+        if n_emit > 0:
+            positions = (
+                self.ptr + torch.arange(n_emit, device=self.device)
+            ) % self.capacity
+            self.obs[positions] = obs0[idx]
+            self.action[positions] = act0[idx]
+            self.reward[positions] = n_step_reward[idx]
+            self.next_obs[positions] = next_obs[idx].detach()
+            self.done[positions] = done_f[idx]
+            self.ptr = int((self.ptr + n_emit) % self.capacity)
+            self.size = min(self.size + n_emit, self.capacity)
+
+        # Clear windows for done envs (sync-free masked write).
+        self.w_len = torch.where(
+            dones.bool(), torch.zeros_like(self.w_len), self.w_len
+        )
 
     def sample(self, batch_size: int) -> dict[str, torch.Tensor]:
         if self.size < batch_size:
@@ -318,7 +330,7 @@ def save_checkpoint(models: Models, step: int, ckpt_dir: Path):
 def parse_args() -> argparse.Namespace:
     cfg = DEFAULT_CONFIG
     parser = argparse.ArgumentParser(description="Standalone QRSAC trainer (1v0, single process)")
-    parser.add_argument("--num-envs", type=int, default=16)
+    parser.add_argument("--num-envs", type=int, default=512)
     parser.add_argument("--total-steps", type=int, default=500_000)
     parser.add_argument("--batch-size", type=int, default=cfg["model"]["batch_size"])
     parser.add_argument("--updates-per-step", type=int, default=1)
@@ -472,10 +484,13 @@ def main():
             reward = reward.to(torch.float32)
             episode_rewards += reward
 
-            for env_id in range(args.num_envs):
-                if done[env_id].item():
-                    recent_episode_rewards.append(episode_rewards[env_id].item())
-                    episode_rewards[env_id] = 0.0
+            done_bool = done.bool()
+            completed_returns = episode_rewards[done_bool]
+            if completed_returns.numel() > 0:
+                recent_episode_rewards.extend(completed_returns.tolist())
+            episode_rewards = torch.where(
+                done_bool, torch.zeros_like(episode_rewards), episode_rewards
+            )
 
             accumulate_step_diagnostics(diag, reward, actions, obs, extras)
 

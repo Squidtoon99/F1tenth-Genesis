@@ -148,7 +148,7 @@ def run_physics_check(extra_overrides: dict | None = None, verbose: bool = True)
 
     def log(*args):
         if verbose:
-            log(*args)
+            print(*args)
 
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     env_cfg = cfg["env"]

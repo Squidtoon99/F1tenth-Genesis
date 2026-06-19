@@ -96,7 +96,7 @@ class SectionTimer:
         setattr(obj, attr, shim)
 
 
-def build_env(num_envs: int) -> F1tenthEnv:
+def build_env(num_envs: int, overrides: dict | None = None) -> F1tenthEnv:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     env_cfg = cfg["env"]
     env_cfg.update(
@@ -105,6 +105,8 @@ def build_env(num_envs: int) -> F1tenthEnv:
             "launch_strategy_data": {"num_cars": num_envs},
         }
     )
+    if overrides:
+        env_cfg.update(overrides)
     return F1tenthEnv(
         num_envs=num_envs,
         env_cfg=env_cfg,
@@ -120,8 +122,9 @@ def bench_once(
     steps: int,
     control_interval: int,
     sync,
+    overrides: dict | None = None,
 ) -> dict[str, float]:
-    env = build_env(num_envs)
+    env = build_env(num_envs, overrides=overrides)
 
     timer = SectionTimer(sync)
     # Wrap the step sub-methods and the physics step for a breakdown.

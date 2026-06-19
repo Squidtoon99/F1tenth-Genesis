@@ -28,15 +28,21 @@ class PolicyInferenceNode(Node):
         self.declare_parameter("state_dict_key", "actor")
         self.declare_parameter("device", "cpu")
         self.declare_parameter("deterministic", True)
+        self.declare_parameter("demo_throttle_floor", 0.0)
 
         gp = self.get_parameter
         checkpoint_path = gp("checkpoint_path").get_parameter_value().string_value
         state_dict_key = gp("state_dict_key").get_parameter_value().string_value
         device_str = gp("device").get_parameter_value().string_value
         self.deterministic = gp("deterministic").get_parameter_value().bool_value
+        self.demo_throttle_floor = (
+            gp("demo_throttle_floor").get_parameter_value().double_value
+        )
 
         self.device = torch.device(device_str)
-        self.actor = self._load_actor(checkpoint_path, state_dict_key)
+        self.actor, self._checkpoint_loaded = self._load_actor(
+            checkpoint_path, state_dict_key
+        )
 
         self.action_pub = self.create_publisher(Float32MultiArray, ifc.TOPIC_ACTION, 10)
         self.create_subscription(
@@ -58,7 +64,7 @@ class PolicyInferenceNode(Node):
                     device=self.device,
                 )
                 self.get_logger().info(f"Loaded policy checkpoint: {checkpoint_path}")
-                return actor
+                return actor, True
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().error(
                     f"Failed to load checkpoint '{checkpoint_path}': {exc}. "
@@ -76,7 +82,7 @@ class PolicyInferenceNode(Node):
             act_limit=ifc.ACT_LIMIT,
         ).to(self.device)
         actor.eval()
-        return actor
+        return actor, False
 
     def _on_obs(self, msg: Float32MultiArray):
         if len(msg.data) != ifc.NUM_OBS:
@@ -96,6 +102,8 @@ class PolicyInferenceNode(Node):
 
         action_np = action.squeeze(0).cpu().numpy().astype(np.float32)
         action_np = np.clip(action_np, -ifc.CLIP_ACTIONS, ifc.CLIP_ACTIONS)
+        if not self._checkpoint_loaded and self.demo_throttle_floor > 0.0:
+            action_np[0] = max(action_np[0], float(self.demo_throttle_floor))
 
         out = Float32MultiArray()
         out.data = action_np.tolist()

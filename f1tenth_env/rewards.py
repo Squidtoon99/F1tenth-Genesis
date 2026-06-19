@@ -129,9 +129,11 @@ def reward_oob_penalty(
 ) -> torch.Tensor:
     margin_m = float(reward_cfg.get("oob_margin_m", 0.5))
     k_oob = float(reward_cfg.get("oob_k", 10.0))
+    oob_dist_cap = float(reward_cfg.get("oob_dist_cap_m", 1.0))
     _, oob_dist = compute_oob_from_boundary_state(
         step_state["boundary"], margin_m=margin_m
     )
+    oob_dist = torch.clamp(oob_dist, max=oob_dist_cap)
     return -k_oob * oob_dist
 
 

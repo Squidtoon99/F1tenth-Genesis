@@ -265,6 +265,15 @@ class F1tenthEnv:
         self._step_state_valid = False
         self._eval_launch_initialized = False
 
+        # Optionally compile the pure-tensor observation builder. Default off; the
+        # eager function is used unless explicitly enabled for the GPU target.
+        if bool(self.env_cfg.get("compile_obs", False)):
+            self._build_observation = torch.compile(
+                build_observation, dynamic=False
+            )
+        else:
+            self._build_observation = build_observation
+
         self.reset()
 
     def _yaw_to_quat(self, yaw: torch.Tensor) -> torch.Tensor:
@@ -583,7 +592,7 @@ class F1tenthEnv:
 
     def _update_observation(self):
         step_state = self._get_step_state()
-        self.obs_buf = build_observation(
+        self.obs_buf = self._build_observation(
             num_obs=self.num_obs,
             num_envs=self.num_envs,
             base_lin_vel=self.base_lin_vel,

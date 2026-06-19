@@ -49,12 +49,26 @@ DEFAULT_CONFIG = {
     "env": {
         "num_actions": 2,
         "episode_length": 25.0,
-        "control_interval": 10,
-        "sim_dt": 0.01,
-        "sim_substeps": 10,
+        # control_dt = sim_dt * control_interval = 0.1s (10 Hz control). When
+        # changing sim_dt, adjust control_interval inversely to keep control_dt
+        # and episode_length semantics constant.
+        "control_interval": 20,
+        "sim_dt": 0.005,
+        # Tuned via scripts/sweep_physics_integration.py: every substep count
+        # 2..10 passes the physics_check stability gate (accel/top-speed/brake/
+        # lateral<=mu*g/upright/no-NaN) for normal upright driving. That sweep did
+        # NOT cover high-speed (~6+ m/s) boundary impacts/spins, which overwhelm the
+        # Newton contact solve at substeps=4 and yield NaN rigid state ("invalid"
+        # terminations). Raised to 8 for a stiffer high-speed contact solve; if NaNs
+        # persist under fast wall contact, also lower sim_dt (0.01 -> 0.005).
+        "sim_substeps": 8,
         "solver_iterations": 50,
         "solver_ls_iterations": 50,
         "show_fps": False,
+        # Opt-in torch.compile of the pure-tensor observation math. Off by default
+        # (no warmup/recompile risk); enable on the GPU training target after
+        # confirming a steady-state throughput gain that outweighs compile warmup.
+        "compile_obs": False,
         "clip_actions": 1.0,
         "simulate_action_latency": True,
         "term_oob_margin_m": 0.15,
@@ -99,10 +113,11 @@ DEFAULT_CONFIG = {
         "progress_k_back": 5.0,
         "progress_max_lateral_m": 1.0,
         "oob_margin_m": 0.5,
-        "oob_k": 10.0,
+        "oob_k": 5.0,
+        "oob_dist_cap_m": 1.0,
         "reward_scales": {
-            "progress": 3.4,
-            "oob_penalty": 1.2,
+            "progress": 5.0,
+            "oob_penalty": 0.6,
             "tyre_slip_penalty": 0.05,
         },
     },
