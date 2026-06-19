@@ -152,9 +152,12 @@ def test_obs_parity(real_modules):
             device=device,
             cache_id="parity",
         )
+        step_state["tyre_slip"] = base_lin_vel.new_zeros(
+            (b, obs_cfg["num_obs"] - 372)
+        )
 
         real = real_obs.build_observation(
-            num_obs=372,
+            num_obs=obs_cfg["num_obs"],
             num_envs=b,
             base_lin_vel=base_lin_vel,
             base_ang_vel=base_ang_vel,
@@ -162,11 +165,15 @@ def test_obs_parity(real_modules):
             last_actions=last_actions,
             base_pos=base_pos,
             base_quat=base_quat,
-            centerline=cl,
             obs_cfg=obs_cfg,
             step_state=step_state,
             device=device,
         )
+
+        # Gym/ROS deploy has no per-wheel state; parity uses genesis slip values.
+        slip = step_state.get("tyre_slip")
+        if slip is None:
+            slip = base_lin_vel.new_zeros((b, obs_cfg["num_obs"] - 372))
 
         mine = builder.build(
             base_lin_vel=base_lin_vel,
@@ -175,6 +182,7 @@ def test_obs_parity(real_modules):
             last_actions=last_actions,
             base_pos=base_pos,
             base_quat_wxyz=base_quat,
+            tyre_slip=slip,
         )
 
         diff = (real - mine).abs().max().item()

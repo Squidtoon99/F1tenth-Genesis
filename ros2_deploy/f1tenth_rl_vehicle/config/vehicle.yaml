@@ -1,0 +1,42 @@
+# Real-car parameters for the lean RL vehicle layer (vehicle_obs + drive).
+# The policy_inference node keeps using f1tenth_rl_agent/config/agent.yaml.
+
+vehicle_obs:
+  ros__parameters:
+    # Resolved to the f1tenth_rl_agent share asset by the launch file; override
+    # with an absolute path for a different (surveyed) track.
+    track_csv: ""
+    control_hz: 10.0
+    # Map-frame pose from the particle filter, body twist from the VESC odom.
+    pose_topic: "/pf/pose/odom"
+    twist_topic: "/odom"
+    action_topic: "/rl/action"
+    obs_topic: "/rl/observation"
+    # Set true if the twist source reports velocity in the world/map frame.
+    twist_in_world_frame: false
+    # Observation assembly (match config.py DEFAULT_CONFIG["obs"] and agent.yaml).
+    num_obs: 380
+    future_track_num_points: 60
+    future_track_horizon_s: 6.0
+    future_track_width: 2.2
+    contact_margin_m: 0.08
+    clip_obs: 50.0
+    lin_vel_scale: 1.0
+    ang_vel_scale: 1.0
+    lin_acc_scale: 1.0
+    coarse_stride: 10
+
+drive:
+  ros__parameters:
+    # Match training DEFAULT_CONFIG (config.py): max_speed=15.0, delta_max=0.44.
+    max_speed: 15.0
+    max_steer: 0.44
+    clip_actions: 1.0
+    # Hard cap on commanded speed for staged shakedown. Raise once validated.
+    speed_limit_mps: 2.0
+    watchdog_timeout_s: 0.5
+    brake_behavior: "stop"
+    action_topic: "/rl/action"
+    # Publishes straight to the f1tenth_stack ackermann_mux autonomous input.
+    drive_topic: "/drive"
+    frame_id: "base_link"

@@ -59,7 +59,7 @@ def _odom(x, y, yaw, vx, stamp_s):
     return msg
 
 
-def test_observation_builder_emits_372():
+def test_observation_builder_emits_380():
     cl, wl, wr = make_oval(n=180)
     rclpy.init()
     node = None

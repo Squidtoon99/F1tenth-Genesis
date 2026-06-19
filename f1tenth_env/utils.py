@@ -80,12 +80,29 @@ def load_tracks(force=False) -> None:
 load_tracks()
 
 
+def bundled_track_csv(workspace_dir: str, track_name: str) -> str | None:
+    """Return a bundled centerline CSV path, if present under ros2_deploy/assets."""
+    for root in (
+        os.path.join(workspace_dir, "ros2_deploy", "f1tenth_rl_agent", "assets"),
+        os.path.join(workspace_dir, "ros2_deploy", "assets"),
+    ):
+        path = os.path.join(root, f"{track_name}_centerline.csv")
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def resolve_track_data(configured: str | None, workspace_dir: str) -> np.ndarray:
     if configured is not None:
         if not configured.endswith(".csv"):
-            # Check if its one of the tracks from f1tenth racetracks
-            if (track := TRACKS.get(configured)) is not None:
+            if (local := bundled_track_csv(workspace_dir, configured)) is not None:
+                configured = local
+            elif (track := TRACKS.get(configured)) is not None:
                 return track
+        if not os.path.isabs(configured):
+            rel = os.path.join(workspace_dir, configured)
+            if os.path.exists(rel):
+                configured = rel
         if not os.path.exists(configured):
             raise FileNotFoundError(f"track does not exist: {configured}")
         return np.genfromtxt(configured, delimiter=",", names=True, dtype=np.float32)

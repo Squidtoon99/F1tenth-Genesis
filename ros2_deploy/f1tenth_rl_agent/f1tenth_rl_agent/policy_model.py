@@ -90,3 +90,59 @@ def load_actor(
     actor.to(device)
     actor.eval()
     return actor
+
+
+class ObsNormalizer:
+    """Apply the trainer's observation standardization at inference.
+
+    Mirrors ``standalone_trainer.ObsNormalizer.normalize``: standardize each feature
+    by the running mean/variance accumulated during training, then clamp. The policy
+    was trained on normalized observations, so deploy MUST apply the same transform
+    before the actor sees the raw 380-dim observation.
+    """
+
+    def __init__(
+        self,
+        mean: torch.Tensor,
+        var: torch.Tensor,
+        eps: float,
+        clip: float,
+        device: torch.device,
+    ):
+        self.device = device
+        self.mean = mean.to(device=device, dtype=torch.float32)
+        self.var = var.to(device=device, dtype=torch.float32)
+        self.eps = float(eps)
+        self.clip = float(clip)
+
+    @torch.no_grad()
+    def normalize(self, x: torch.Tensor) -> torch.Tensor:
+        normed = (x.to(torch.float32) - self.mean) / torch.sqrt(self.var + self.eps)
+        return torch.clamp(normed, -self.clip, self.clip)
+
+
+def load_obs_norm(
+    checkpoint_path: str,
+    device: torch.device,
+    eps: float,
+    clip: float,
+) -> ObsNormalizer | None:
+    """Load ObsNormalizer stats from a training checkpoint, or None if absent.
+
+    ``standalone_trainer.save_checkpoint`` stores the running statistics under the
+    ``obs_norm`` key (``{"mean", "var", "count"}``). Raw actor state_dicts and older
+    checkpoints without that key return None (no normalization).
+    """
+    payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    if not isinstance(payload, dict):
+        return None
+    stats = payload.get("obs_norm")
+    if not isinstance(stats, dict) or "mean" not in stats or "var" not in stats:
+        return None
+    return ObsNormalizer(
+        mean=torch.as_tensor(stats["mean"]),
+        var=torch.as_tensor(stats["var"]),
+        eps=eps,
+        clip=clip,
+        device=device,
+    )

@@ -1,4 +1,4 @@
-"""observation_builder_node: build the 372-dim policy observation from odometry.
+"""observation_builder_node: build the 380-dim policy observation from odometry.
 
 Subscribes to ground-truth odometry and the latched track topics, reconstructs the
 exact training observation via obs_core, and publishes it at the control rate.
@@ -50,19 +50,19 @@ class ObservationBuilderNode(Node):
         self.publish_markers = (
             gp("publish_debug_markers").get_parameter_value().bool_value
         )
-        self.obs_cfg = {
-            "num_obs": ifc.NUM_OBS,
-            "contact_margin_m": gp("contact_margin_m").get_parameter_value().double_value,
-            "future_track_num_points": gp("future_track_num_points")
-            .get_parameter_value()
-            .integer_value,
-            "future_track_horizon_s": gp("future_track_horizon_s")
-            .get_parameter_value()
-            .double_value,
-            "future_track_width": gp("future_track_width")
-            .get_parameter_value()
-            .double_value,
-        }
+        self.obs_cfg = ifc.default_obs_cfg()
+        self.obs_cfg["contact_margin_m"] = (
+            gp("contact_margin_m").get_parameter_value().double_value
+        )
+        self.obs_cfg["future_track_num_points"] = (
+            gp("future_track_num_points").get_parameter_value().integer_value
+        )
+        self.obs_cfg["future_track_horizon_s"] = (
+            gp("future_track_horizon_s").get_parameter_value().double_value
+        )
+        self.obs_cfg["future_track_width"] = (
+            gp("future_track_width").get_parameter_value().double_value
+        )
 
         self.builder: ObservationBuilder | None = None
         self._centerline = None

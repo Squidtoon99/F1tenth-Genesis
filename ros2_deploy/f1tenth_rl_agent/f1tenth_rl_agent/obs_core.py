@@ -173,17 +173,11 @@ def build_boundary_state(
 
 # --- observation components (port of observations.py) -------------------------
 def obs_track_progress(
-    centerline: np.ndarray,
-    base_pos: torch.Tensor,
-    device: torch.device,
+    frenet_state: dict[str, Any],
 ) -> torch.Tensor:
-    centerline_t = torch.as_tensor(centerline, device=device, dtype=TC_FLOAT)
-    points = centerline_t.unsqueeze(0) - base_pos[:, :2].unsqueeze(1)
-    distances = torch.linalg.norm(points, dim=-1)
-    closest_idx = torch.argmin(distances, dim=-1)
-
-    progress_ratio = closest_idx.to(dtype=TC_FLOAT) / max((centerline_t.shape[0] - 1), 1)
-    angle = 2.0 * torch.tensor(np.pi, dtype=TC_FLOAT, device=device) * progress_ratio
+    track_len = frenet_state["L"].clamp(min=1e-6)
+    progress_ratio = frenet_state["s"] / track_len
+    angle = (2.0 * np.pi) * progress_ratio
     return torch.stack([torch.cos(angle), torch.sin(angle)], dim=-1)
 
 
@@ -219,6 +213,7 @@ def obs_future_track_points(
     base_lin_vel: torch.Tensor,
     obs_cfg: dict[str, Any],
     device: torch.device,
+    frenet_state: dict[str, Any],
 ) -> torch.Tensor:
     centerline_t = torch.as_tensor(centerline, device=device, dtype=TC_FLOAT)
     robot_pos = base_pos[:, :2]
@@ -235,18 +230,16 @@ def obs_future_track_points(
         ],
         dim=0,
     )
-    total_len = cumlen[-1].clamp(min=1e-6)
 
     batch = robot_pos.shape[0]
     samples = int(obs_cfg.get("future_track_num_points", 60))
     horizon_s = float(obs_cfg.get("future_track_horizon_s", 6.0))
     track_width = float(obs_cfg.get("future_track_width", 2.0))
 
-    dists = torch.linalg.vector_norm(
-        centerline_t.unsqueeze(0) - robot_pos.unsqueeze(1), dim=-1
-    )
-    closest_idx = torch.argmin(dists, dim=-1)
-    s0 = cumlen[closest_idx]
+    # Use the Frenet arc-length and closed-loop track length (matches training
+    # observations.py), not the nearest open-polyline vertex / open total length.
+    s0 = frenet_state["s"]
+    total_len = frenet_state["L"].clamp(min=1e-6)
 
     speed = torch.linalg.vector_norm(lin_vel, dim=-1)
     lookahead = speed * horizon_s
@@ -331,19 +324,30 @@ class ObservationBuilder:
         last_actions: torch.Tensor,
         base_pos: torch.Tensor,
         base_quat_wxyz: torch.Tensor,
+        tyre_slip: torch.Tensor | None = None,
     ) -> torch.Tensor:
         frenet_state = frenet_projection(base_pos, self.geom, self.device)
         boundary_state = build_boundary_state(
             frenet_state, self.w_tr_left, self.w_tr_right
         )
 
+        obs_scales = self.obs_cfg.get("obs_scales", {})
+        lin_vel_scale = float(obs_scales.get("lin_vel", 1.0))
+        ang_vel_scale = float(obs_scales.get("ang_vel", 1.0))
+        lin_acc_scale = float(obs_scales.get("lin_acc", 1.0))
+
+        batch = base_lin_vel.shape[0]
+        slip_dim = self.num_obs - 372
+        if tyre_slip is None:
+            tyre_slip = base_lin_vel.new_zeros((batch, slip_dim))
+
         obs = torch.cat(
             (
-                base_lin_vel[:, :2],
-                base_ang_vel[:, 2:3],
-                base_lin_acc[:, :2],
+                base_lin_vel[:, :2] * lin_vel_scale,
+                base_ang_vel[:, 2:3] * ang_vel_scale,
+                base_lin_acc[:, :2] * lin_acc_scale,
                 last_actions,
-                obs_track_progress(self.centerline, base_pos, self.device),
+                obs_track_progress(frenet_state),
                 obs_centerline_angle(frenet_state, base_quat_wxyz),
                 obs_centerline_distance(boundary_state),
                 obs_contact_flag(boundary_state, self.obs_cfg),
@@ -354,10 +358,16 @@ class ObservationBuilder:
                     base_lin_vel,
                     self.obs_cfg,
                     self.device,
+                    frenet_state,
                 ),
+                tyre_slip,
             ),
             dim=-1,
         )
+
+        clip_obs = float(self.obs_cfg.get("clip_obs", 0.0))
+        if clip_obs > 0.0:
+            obs = torch.clamp(obs, min=-clip_obs, max=clip_obs)
 
         actual_obs_dim = int(obs.shape[1])
         if actual_obs_dim != self.num_obs:

@@ -48,19 +48,26 @@ All topic names and array layouts are mirrored in code in
 - Frame `map`. LINE_STRIP markers: id 0 = centerline, id 1 = left boundary, id 2 = right boundary.
 
 ### `/rl/observation` - `std_msgs/Float32MultiArray`
-- `data` length **372**, exact order of `f1tenth_env.observations.build_observation`:
+- `data` length **380**, exact order of `f1tenth_env.observations.build_observation`:
 
 | Index | Field | Source |
 | --- | --- | --- |
-| `0:2` | body-frame linear velocity `(vx, vy)` | odom twist |
-| `2:3` | body-frame yaw rate `wz` | odom twist |
-| `3:5` | body-frame linear accel `(ax, ay)` | finite difference of body velocity |
+| `0:2` | body-frame linear velocity `(vx, vy)` × `obs_scales.lin_vel` (1.0) | odom twist |
+| `2:3` | body-frame yaw rate `wz` × `obs_scales.ang_vel` (1.0) | odom twist |
+| `3:5` | body-frame linear accel `(ax, ay)` × `obs_scales.lin_acc` (1.0) | finite difference of body velocity |
 | `5:7` | last action `[throttle, steering]` | last `/rl/action` |
-| `7:9` | track progress `[cos, sin]` of `closest_idx/(N-1)` | centerline |
+| `7:9` | track progress `[cos, sin]` of Frenet `s/L` | Frenet |
 | `9` | centerline heading error (yaw - track tangent, wrapped) | Frenet |
 | `10` | signed lateral error `ey` | Frenet |
 | `11` | wall-contact flag (`boundary_dist < 0.08`) | Frenet |
 | `12:372` | future track points: center/left/right x 60 pts x 2D, **ego frame** | centerline |
+| `372:380` | tyre slip `[slip_ratio x4, slip_angle x4]` | **zeros in gym deploy** (no wheel state in f1tenth_gym_ros) |
+
+- The env-side scales are now `1.0` and the assembled observation is loosely clipped
+  to `[-50, 50]` (`clip_obs` in training config). Per-feature standardization is done
+  by the trainer's `ObsNormalizer`; `policy_inference_node` applies the checkpoint's
+  saved `obs_norm` (standardize by running mean/var, then clamp to `norm_clip = 10`)
+  before the actor. A checkpoint with no `obs_norm` runs unnormalized.
 
 ### `/rl/action` - `std_msgs/Float32MultiArray`
 - `data` length **2**, `[throttle, steering]`, both in `[-1, 1]`.
@@ -75,8 +82,8 @@ All topic names and array layouts are mirrored in code in
 
 ## Observation / action constants (from `config.py` DEFAULT_CONFIG)
 
-- `num_obs = 372`, `num_actions = 2`
-- `max_speed = 10.0` m/s, `max_steer = 0.4189` rad, `clip_actions = 1.0`
+- `num_obs = 380`, `num_actions = 2`
+- `max_speed = 15.0` m/s, `max_steer = 0.44` rad, `clip_actions = 1.0`
 - `contact_margin_m = 0.08`
 - `future_track_num_points = 60`, `future_track_horizon_s = 6.0`, `future_track_width = 2.2`
 - hidden layers `[512, 512, 512]`, activation ReLU, `act_limit = 1.0`

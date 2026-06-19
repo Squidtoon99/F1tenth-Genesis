@@ -1,7 +1,7 @@
 track_server:
   ros__parameters:
-    # Path to the Oschersleben centerline CSV (columns x_m, y_m, w_tr_right_m, w_tr_left_m).
-    track_csv: "/sim_ws/src/f1tenth_rl_agent/assets/Oschersleben_centerline.csv"
+    # IV 2026 competition track (dfr_f1tenth_gym dev-humble). Use agent_oschersleben.yaml for Oschersleben.
+    track_csv: "/sim_ws/src/f1tenth_rl_agent/assets/IV_2026_SIM_centerline.csv"
     frame_id: "map"
     republish_hz: 1.0
 
@@ -26,11 +26,16 @@ policy_inference:
     deterministic: true
     # Keep the random-init demo car moving in RViz (ignored when a checkpoint loads).
     demo_throttle_floor: 0.55
+    # ObsNormalizer (match config.py norm_clip / norm_eps); applied to raw obs using
+    # the checkpoint's saved obs_norm stats before the actor.
+    norm_clip: 10.0
+    norm_eps: 1.0e-8
 
 drive_command:
   ros__parameters:
-    max_speed: 10.0
-    max_steer: 0.4189
+    # Match training DEFAULT_CONFIG (config.py): max_speed=15.0, delta_max=0.44.
+    max_speed: 15.0
+    max_steer: 0.44
     clip_actions: 1.0
     watchdog_timeout_s: 0.5
     # "stop" -> negative throttle commands zero speed; "reverse" -> allow negative speed.
@@ -41,8 +46,8 @@ evaluation:
     oob_margin_m: 0.0
     stuck_speed_mps: 0.2
     stuck_timeout_s: 3.0
-    # Match config/sim.yaml ego start pose (sx, sy, stheta).
+    # Match dfr_f1tenth_gym dev-humble config/sim.yaml ego start (sx, sy, stheta).
     reset_x: 0.0
-    reset_y: 0.0
-    reset_yaw: 2.86
+    reset_y: 2.0
+    reset_yaw: -0.9
     auto_reset: true

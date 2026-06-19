@@ -18,7 +18,11 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 
 from f1tenth_rl_agent import interfaces as ifc
-from f1tenth_rl_agent.policy_model import SquashedGaussianMLPActor, load_actor
+from f1tenth_rl_agent.policy_model import (
+    SquashedGaussianMLPActor,
+    load_actor,
+    load_obs_norm,
+)
 
 
 class PolicyInferenceNode(Node):
@@ -29,6 +33,8 @@ class PolicyInferenceNode(Node):
         self.declare_parameter("device", "cpu")
         self.declare_parameter("deterministic", True)
         self.declare_parameter("demo_throttle_floor", 0.0)
+        self.declare_parameter("norm_clip", ifc.OBS_NORM_CLIP)
+        self.declare_parameter("norm_eps", ifc.OBS_NORM_EPS)
 
         gp = self.get_parameter
         checkpoint_path = gp("checkpoint_path").get_parameter_value().string_value
@@ -38,11 +44,14 @@ class PolicyInferenceNode(Node):
         self.demo_throttle_floor = (
             gp("demo_throttle_floor").get_parameter_value().double_value
         )
+        self.norm_clip = gp("norm_clip").get_parameter_value().double_value
+        self.norm_eps = gp("norm_eps").get_parameter_value().double_value
 
         self.device = torch.device(device_str)
         self.actor, self._checkpoint_loaded = self._load_actor(
             checkpoint_path, state_dict_key
         )
+        self.obs_normalizer = self._load_obs_normalizer(checkpoint_path)
 
         self.action_pub = self.create_publisher(Float32MultiArray, ifc.TOPIC_ACTION, 10)
         self.create_subscription(
@@ -84,6 +93,34 @@ class PolicyInferenceNode(Node):
         actor.eval()
         return actor, False
 
+    def _load_obs_normalizer(self, checkpoint_path: str):
+        if not checkpoint_path:
+            return None
+        try:
+            normalizer = load_obs_norm(
+                checkpoint_path=checkpoint_path,
+                device=self.device,
+                eps=self.norm_eps,
+                clip=self.norm_clip,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(
+                f"Failed to load obs_norm from '{checkpoint_path}': {exc}. "
+                "Running without observation normalization."
+            )
+            return None
+        if normalizer is None:
+            self.get_logger().warn(
+                "Checkpoint has no 'obs_norm' stats; running without observation "
+                "normalization. This is correct only if the policy was trained "
+                "without ObsNormalizer."
+            )
+        else:
+            self.get_logger().info(
+                f"Loaded obs_norm (clip={self.norm_clip}, eps={self.norm_eps})."
+            )
+        return normalizer
+
     def _on_obs(self, msg: Float32MultiArray):
         if len(msg.data) != ifc.NUM_OBS:
             self.get_logger().warn(
@@ -91,6 +128,8 @@ class PolicyInferenceNode(Node):
             )
             return
         obs = torch.tensor([list(msg.data)], dtype=torch.float32, device=self.device)
+        if self.obs_normalizer is not None:
+            obs = self.obs_normalizer.normalize(obs)
 
         t0 = time.perf_counter()
         with torch.no_grad():
