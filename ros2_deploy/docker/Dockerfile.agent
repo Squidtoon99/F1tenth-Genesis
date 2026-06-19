@@ -1,0 +1,26 @@
+# Agent image for the f1tenth_rl_agent stack.
+#
+# The f1tenth_gym_ros image (built from RMin280/dfr_f1tenth_gym dev-humble) already
+# provides ROS 2 Humble, a venv at /sim_ws/.venv with torch + numpy, and
+# ackermann_msgs (via rosdep). This image just adds our package and colcon-builds it.
+#
+# Build context must be the ros2_deploy/ directory:
+#   docker build -t f1tenth_rl_agent -f docker/Dockerfile.agent ..
+ARG SIM_IMAGE=f1tenth_gym_ros
+FROM ${SIM_IMAGE}
+
+SHELL ["/bin/bash", "-c"]
+
+# torch + numpy ship in the sim image venv; reinstall defensively only if missing.
+RUN source /sim_ws/.venv/bin/activate && \
+    (python -c "import torch, numpy" 2>/dev/null || pip install --no-cache-dir torch numpy)
+
+# The package is normally bind-mounted for development (see docker-compose.agent.yml).
+# Copy it in as well so the image is self-contained.
+COPY f1tenth_rl_agent /sim_ws/src/f1tenth_rl_agent
+
+RUN source /opt/ros/humble/setup.bash && \
+    source /sim_ws/.venv/bin/activate && \
+    cd /sim_ws && colcon build --packages-select f1tenth_rl_agent
+
+ENTRYPOINT ["/bin/bash"]

@@ -1,0 +1,46 @@
+# Optional separate-container path for the agent.
+#
+# The bridge's own docker-compose (in the f1tenth_gym_ros repo) brings up the `sim`
+# and `novnc` services on a network named "<project>_x11". This compose file attaches
+# an `agent` container to that same network so DDS discovery works across containers.
+#
+# Usage (from ros2_deploy/docker, after the sim compose is up):
+#   SIM_NETWORK=f1tenth_gym_ros_x11 CHECKPOINT_DIR=/abs/path/to/ckpts \
+#     docker compose -f docker-compose.agent.yml up --build
+#
+# Simpler alternative (recommended): mount this package into the running sim
+# container and run the nodes there via tmux (see ros2_deploy/README.md).
+version: "3"
+
+services:
+  agent:
+    image: f1tenth_rl_agent
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.agent
+      args:
+        SIM_IMAGE: f1tenth_gym_ros
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+    volumes:
+      # live-mount the package for development
+      - ../f1tenth_rl_agent:/sim_ws/src/f1tenth_rl_agent
+      # mount trained checkpoints read-only at /checkpoints
+      - ${CHECKPOINT_DIR:-./checkpoints}:/checkpoints:ro
+    networks:
+      - sim_net
+    stdin_open: true
+    tty: true
+    command: >
+      bash -c "source /opt/ros/humble/setup.bash &&
+               source /sim_ws/.venv/bin/activate &&
+               cd /sim_ws && colcon build --packages-select f1tenth_rl_agent &&
+               source install/setup.bash &&
+               ros2 launch f1tenth_rl_agent bringup_agent_launch.py
+                 checkpoint_path:=/checkpoints/policy.pt"
+
+networks:
+  sim_net:
+    external: true
+    name: ${SIM_NETWORK:-f1tenth_gym_ros_x11}
