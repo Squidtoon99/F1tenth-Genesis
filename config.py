@@ -37,16 +37,20 @@ class RedisWrapper:
 DEFAULT_CONFIG = {
     "obs": {
         "num_obs": 380,
-        # Scale unbounded physical channels into ~unit range (max_speed=15 ->
-        # ~3.0, a few rad/s of yaw -> ~1.0) so they don't dominate the obs vector.
+        # Observation normalization is now done with empirical running statistics in
+        # the trainer (ObsNormalizer), driven by values actually experienced. Keep
+        # the env-side fixed scales at 1.0 so near-raw obs reach the normalizer.
         "obs_scales": {
-            "lin_vel": 0.2,
-            "ang_vel": 0.25,
-            "lin_acc": 0.1,
+            "lin_vel": 1.0,
+            "ang_vel": 1.0,
+            "lin_acc": 1.0,
         },
-        # Hard clip on the assembled observation; a transient spin/contact blow-up
-        # can otherwise push obs_absmax into the hundreds and destabilize the critic.
-        "clip_obs": 10.0,
+        # Loose guard only: bound a rare spin/contact transient before it can skew
+        # the running variance. Real scaling is handled by the trainer normalizer.
+        "clip_obs": 50.0,
+        # Trainer-side ObsNormalizer parameters.
+        "norm_clip": 10.0,
+        "norm_eps": 1e-8,
         "contact_margin_m": 0.08,
         "future_track_num_points": 60,
         "future_track_horizon_s": 6.0,
@@ -113,7 +117,8 @@ DEFAULT_CONFIG = {
         "v_eps": 0.1,
         "enable_aero_drag": True,
         "drive_torque_sign": 1.0,
-        "track": "Oschersleben",
+        # Competition sim track (dfr_f1tenth_gym dev-humble maps/IV_2026_SIM).
+        "track": "IV_2026_SIM",
     },
     "reward": {
         "progress_k_fwd": 5.0,
@@ -122,9 +127,15 @@ DEFAULT_CONFIG = {
         "oob_margin_m": 0.5,
         "oob_k": 5.0,
         "oob_dist_cap_m": 1.0,
+        # Reference speed for the quadratic off-course speed factor 1+(v/v_ref)^2.
+        "oob_speed_ref_mps": 3.0,
         # Track-aligned speed reward saturates here; kept below the ~4 m/s spin-out
         # regime so the agent is pushed to move without reaching the NaN envelope.
         "speed_target_mps": 3.0,
+        # Global downscale applied to the summed reward to keep per-step total and
+        # value targets O(1) (progress alone was ~9/step before). Preserves the
+        # relative balance between the individual reward terms.
+        "global_reward_scale": 0.2,
         "reward_scales": {
             "progress": 5.0,
             "oob_penalty": 0.6,

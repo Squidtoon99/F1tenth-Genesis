@@ -130,11 +130,19 @@ def reward_oob_penalty(
     margin_m = float(reward_cfg.get("oob_margin_m", 0.5))
     k_oob = float(reward_cfg.get("oob_k", 10.0))
     oob_dist_cap = float(reward_cfg.get("oob_dist_cap_m", 1.0))
+    v_ref = float(reward_cfg.get("oob_speed_ref_mps", 3.0))
     _, oob_dist = compute_oob_from_boundary_state(
         step_state["boundary"], margin_m=margin_m
     )
     oob_dist = torch.clamp(oob_dist, max=oob_dist_cap)
-    return -k_oob * oob_dist
+
+    # GT Sophy-style: scale the off-course penalty by (squared) speed so high-speed
+    # excursions are punished far harder than low-speed ones. This makes the speed
+    # limit bind through the penalty and suppresses the fast off-track excursions
+    # that drive the simulator into NaN spin-outs.
+    v = torch.linalg.norm(step_state["base_lin_vel"][:, :2], dim=-1)
+    speed_factor = 1.0 + (v / v_ref) ** 2
+    return -k_oob * oob_dist * speed_factor
 
 
 def reward_speed(
@@ -228,6 +236,16 @@ def compute_rewards(
     tyre_slip_penalty *= scales["tyre_slip_penalty"]
     speed *= scales.get("speed", 0.0)
     smoothness_penalty *= scales.get("smoothness", 0.0)
+
+    # Single global knob to shrink overall reward magnitude (keeps the relative
+    # balance between terms intact) so returns / critic targets stay O(1).
+    global_scale = float(reward_cfg.get("global_reward_scale", 1.0))
+    progress *= global_scale
+    oob_penalty *= global_scale
+    tyre_slip_penalty *= global_scale
+    speed *= global_scale
+    smoothness_penalty *= global_scale
+
     last_terms: dict[str, torch.Tensor] = {
         "progress": progress.clone(),
         "oob_penalty": oob_penalty.clone(),

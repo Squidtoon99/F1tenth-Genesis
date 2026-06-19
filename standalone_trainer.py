@@ -190,6 +190,68 @@ class NStepReplayBuffer:
         }
 
 
+class ObsNormalizer:
+    """Running mean/variance observation normalizer (Welford parallel update).
+
+    Estimates per-feature mean and variance from observations actually experienced
+    during training, then normalizes obs at network-input time. The replay buffer
+    keeps RAW observations; normalization is applied with the current statistics
+    wherever an observation enters a network, so there is no stale-normalization
+    drift across the buffer. Stats are kept on-device in float32.
+    """
+
+    def __init__(
+        self,
+        obs_dim: int,
+        device: torch.device,
+        eps: float = 1e-8,
+        clip: float = 10.0,
+    ):
+        self.device = device
+        self.eps = float(eps)
+        self.clip = float(clip)
+        self.mean = torch.zeros(obs_dim, device=device, dtype=torch.float32)
+        self.var = torch.ones(obs_dim, device=device, dtype=torch.float32)
+        self.count = eps
+
+    @torch.no_grad()
+    def update(self, x: torch.Tensor) -> None:
+        """Chan et al. parallel variance update from a (batch, obs_dim) tensor."""
+        x = x.to(torch.float32)
+        batch_count = x.shape[0]
+        if batch_count == 0:
+            return
+        batch_mean = x.mean(dim=0)
+        batch_var = x.var(dim=0, unbiased=False)
+
+        delta = batch_mean - self.mean
+        tot_count = self.count + batch_count
+
+        self.mean = self.mean + delta * (batch_count / tot_count)
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        m2 = m_a + m_b + (delta**2) * (self.count * batch_count / tot_count)
+        self.var = m2 / tot_count
+        self.count = tot_count
+
+    @torch.no_grad()
+    def normalize(self, x: torch.Tensor) -> torch.Tensor:
+        normed = (x.to(torch.float32) - self.mean) / torch.sqrt(self.var + self.eps)
+        return torch.clamp(normed, -self.clip, self.clip)
+
+    def state_dict(self) -> dict:
+        return {
+            "mean": self.mean.detach().cpu(),
+            "var": self.var.detach().cpu(),
+            "count": float(self.count),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        self.mean = state["mean"].to(self.device, dtype=torch.float32)
+        self.var = state["var"].to(self.device, dtype=torch.float32)
+        self.count = float(state["count"])
+
+
 class RunningStats:
     """Accumulates scalar means / min / max / totals for named diagnostics.
 
@@ -311,18 +373,25 @@ def build_models(cfg: dict, device: torch.device) -> tuple[Models, QRSACTrainer]
     return models, trainer
 
 
-def save_checkpoint(models: Models, step: int, ckpt_dir: Path):
+def save_checkpoint(
+    models: Models,
+    step: int,
+    ckpt_dir: Path,
+    normalizer: "ObsNormalizer | None" = None,
+):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     path = ckpt_dir / f"ckpt_{step}.pt"
-    torch.save(
-        {
-            "step": step,
-            "actor": models.actor.state_dict(),
-            "critic1": models.critic1.state_dict(),
-            "critic2": models.critic2.state_dict(),
-        },
-        path,
-    )
+    payload = {
+        "step": step,
+        "actor": models.actor.state_dict(),
+        "critic1": models.critic1.state_dict(),
+        "critic2": models.critic2.state_dict(),
+    }
+    if normalizer is not None:
+        # Eval/deploy MUST apply these same obs stats (e.g. ros2_deploy) since the
+        # policy was trained on normalized observations.
+        payload["obs_norm"] = normalizer.state_dict()
+    torch.save(payload, path)
     logging.getLogger(LOGGER_NAME).info("Saved checkpoint to %s", path)
     return path
 
@@ -419,6 +488,12 @@ def main():
         num_envs=args.num_envs,
         device=device,
     )
+    normalizer = ObsNormalizer(
+        obs_dim=obs_cfg["num_obs"],
+        device=device,
+        eps=float(obs_cfg.get("norm_eps", 1e-8)),
+        clip=float(obs_cfg.get("norm_clip", 10.0)),
+    )
 
     run_id = args.run_id or uuid.uuid4().hex[:8]
     ckpt_dir = Path("outputs/standalone") / run_id
@@ -437,6 +512,7 @@ def main():
 
     obs, _ = env.reset()
     obs = obs.to(torch.float32)
+    normalizer.update(obs)
     act_dim = cfg["env"]["num_actions"]
     global_step = 0
     train_updates = 0
@@ -463,7 +539,9 @@ def main():
             else:
                 with torch.no_grad():
                     actions, _ = models.actor(
-                        obs, deterministic=False, with_logprob=False
+                        normalizer.normalize(obs),
+                        deterministic=False,
+                        with_logprob=False,
                     )
                 actions = actions.clamp(-clip_actions, clip_actions)
 
@@ -478,7 +556,7 @@ def main():
                     global_step,
                     exc,
                 )
-                save_checkpoint(models, global_step, ckpt_dir)
+                save_checkpoint(models, global_step, ckpt_dir, normalizer)
                 break
             next_obs = next_obs.to(torch.float32)
             reward = reward.to(torch.float32)
@@ -493,12 +571,16 @@ def main():
             )
 
             accumulate_step_diagnostics(diag, reward, actions, obs, extras)
+            diag.add_mean("obs/norm_abs", normalizer.normalize(obs).abs())
 
             finite_ok = bool(
                 torch.isfinite(reward).all() and torch.isfinite(next_obs).all()
             )
             if finite_ok:
                 buffer.add(obs, actions, reward, next_obs, done)
+                # Update running stats only from finite observations so a NaN/Inf
+                # spin transient can never corrupt the normalizer.
+                normalizer.update(next_obs)
             else:
                 n_bad_reward = int((~torch.isfinite(reward)).sum().item())
                 n_bad_obs_envs = int(
@@ -517,6 +599,9 @@ def main():
             if buffer.size >= args.min_train_samples:
                 for _ in range(args.updates_per_step):
                     batch = buffer.sample(args.batch_size)
+                    # Buffer stores RAW obs; normalize with current stats at input.
+                    batch["obs"] = normalizer.normalize(batch["obs"])
+                    batch["next_obs"] = normalizer.normalize(batch["next_obs"])
                     losses = trainer.update(batch)
                     train_updates += 1
                     policy_loss_accum += losses.policy_loss
@@ -584,7 +669,8 @@ def main():
                 )
                 log.info(
                     "  env: speed=%.3f lat_err=%.3f oob_frac=%.3f progress_ds=%.4f | "
-                    "throttle[%.2f..%.2f] steer[%.2f..%.2f] obs_absmax=%.2f",
+                    "throttle[%.2f..%.2f] steer[%.2f..%.2f] obs_absmax=%.2f "
+                    "norm_obs_absmax=%.2f",
                     diag.mean("metric/speed_xy"),
                     diag.mean("metric/lateral_error"),
                     diag.mean("metric/oob_mask"),
@@ -594,6 +680,7 @@ def main():
                     diag.vmin("action/steer"),
                     diag.vmax("action/steer"),
                     diag.vmax("obs/abs"),
+                    diag.vmax("obs/norm_abs"),
                 )
                 log.info(
                     "  terminations: time_out=%d oob=%d not_moving=%d invalid=%d lap=%d",
@@ -651,9 +738,9 @@ def main():
                 diag.reset()
 
             if global_step % args.ckpt_interval == 0:
-                save_checkpoint(models, global_step, ckpt_dir)
+                save_checkpoint(models, global_step, ckpt_dir, normalizer)
 
-        save_checkpoint(models, global_step, ckpt_dir)
+        save_checkpoint(models, global_step, ckpt_dir, normalizer)
     finally:
         try:
             env.close()
