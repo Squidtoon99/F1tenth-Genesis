@@ -1,0 +1,32 @@
+# Drop-in overrides for the f1tenth_gym_ros config/sim.yaml so the simulator runs the
+# Oschersleben track (matching the policy's training track + the agent obs centerline).
+#
+# Copy the Oschersleben_map.png/.yaml from ros2_deploy/assets into the bridge's
+# maps/ directory, then merge the values below into the bridge's config/sim.yaml
+# (the keys shown here replace the defaults), and re-run `colcon build` in the sim
+# container so the config is reinstalled.
+bridge:
+  ros__parameters:
+    # Single ego agent (no opponent) for policy evaluation.
+    num_agent: 1
+
+    # Oschersleben map (place Oschersleben_map.png/.yaml under maps/).
+    map_path: 'maps/Oschersleben_map'
+    map_img_ext: '.png'
+
+    # f1tenth vehicle params match the trainer (max_steer ~0.4189 rad).
+    vehicle_params: 'f1tenth'
+    scale: 1.0
+
+    # Start pose near the centerline origin (0,0) of the Oschersleben CSV.
+    sx: 0.0
+    sy: 0.0
+    stheta: 0.1
+
+    use_sim_time: False
+    async_mode: True
+
+foxglove:
+  ros__parameters:
+    open_foxglove: True
+    target: 'browser'

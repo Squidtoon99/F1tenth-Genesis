@@ -1,0 +1,82 @@
+# f1tenth_rl_agent - Frozen Topic / Message Contract
+
+This document is the source of truth for the ROS 2 interface between every node in
+the `f1tenth_rl_agent` package and the `f1tenth_gym_ros` simulator bridge. It is
+frozen first so that each node can be developed and tested independently against
+mock publishers/subscribers.
+
+All topic names and array layouts are mirrored in code in
+`f1tenth_rl_agent/interfaces.py`. If you change anything here, change it there too.
+
+## Conventions
+
+- Frame conventions follow REP-103/REP-105. The world frame is `map`. The car body
+  frame is `ego_racecar/base_link` (the odometry child frame).
+- Observation / action vectors are transported as `std_msgs/Float32MultiArray` to
+  avoid a custom message package. The semantic layout is documented below and is
+  identical to the training pipeline in `f1tenth_env/observations.py`.
+- Control cadence is **10 Hz** (`control_interval=10 * sim_dt=0.01`), matching the
+  rate the policy was trained at.
+
+## Topics consumed from the simulator (`f1tenth_gym_ros`)
+
+| Topic | Type | Notes |
+| --- | --- | --- |
+| `/ego_racecar/odom` | `nav_msgs/Odometry` | Ground-truth ego pose (`map` frame) and twist (body frame). |
+| `/map` | `nav_msgs/OccupancyGrid` | Occupancy grid, used for visualization only. |
+
+## Topics produced to the simulator
+
+| Topic | Type | Notes |
+| --- | --- | --- |
+| `/drive` | `ackermann_msgs/AckermannDriveStamped` | Ego drive command (`speed` m/s, `steering_angle` rad). |
+| `/initialpose` | `geometry_msgs/PoseWithCovarianceStamped` | Episode reset pose (used by `evaluation_node`). |
+
+## Internal agent topics
+
+### `/rl/track/centerline` - `nav_msgs/Path`
+- Frame `map`, QoS `transient_local` (latched) + periodic republish.
+- `poses[i].pose.position.{x,y}` are the centerline points in order; `z = 0`.
+- Length `N` equals the number of rows in the track CSV.
+
+### `/rl/track/widths` - `std_msgs/Float32MultiArray`
+- QoS `transient_local`.
+- `layout.dim = [ {label: "point", size: N, stride: 2N}, {label: "lr", size: 2, stride: 2} ]`.
+- `data` length `2N`, interleaved per centerline point: `[w_tr_left_0, w_tr_right_0, w_tr_left_1, w_tr_right_1, ...]`.
+
+### `/rl/track/markers` - `visualization_msgs/MarkerArray`
+- Frame `map`. LINE_STRIP markers: id 0 = centerline, id 1 = left boundary, id 2 = right boundary.
+
+### `/rl/observation` - `std_msgs/Float32MultiArray`
+- `data` length **372**, exact order of `f1tenth_env.observations.build_observation`:
+
+| Index | Field | Source |
+| --- | --- | --- |
+| `0:2` | body-frame linear velocity `(vx, vy)` | odom twist |
+| `2:3` | body-frame yaw rate `wz` | odom twist |
+| `3:5` | body-frame linear accel `(ax, ay)` | finite difference of body velocity |
+| `5:7` | last action `[throttle, steering]` | last `/rl/action` |
+| `7:9` | track progress `[cos, sin]` of `closest_idx/(N-1)` | centerline |
+| `9` | centerline heading error (yaw - track tangent, wrapped) | Frenet |
+| `10` | signed lateral error `ey` | Frenet |
+| `11` | wall-contact flag (`boundary_dist < 0.08`) | Frenet |
+| `12:372` | future track points: center/left/right x 60 pts x 2D, **ego frame** | centerline |
+
+### `/rl/action` - `std_msgs/Float32MultiArray`
+- `data` length **2**, `[throttle, steering]`, both in `[-1, 1]`.
+- Published by `policy_inference_node`; consumed by `drive_command_node` and (for the
+  `last action` obs field) `observation_builder_node`.
+
+### `/rl/obs_debug/future_points` - `visualization_msgs/MarkerArray`
+- Frame `map`. The future center/left/right points transformed back to world for visualization.
+
+### `/rl/metrics` - `std_msgs/Float32MultiArray`
+- `data` length **6**: `[lap_count, last_lap_time_s, max_progress_ratio, lateral_error_m, oob_flag, speed_mps]`.
+
+## Observation / action constants (from `config.py` DEFAULT_CONFIG)
+
+- `num_obs = 372`, `num_actions = 2`
+- `max_speed = 10.0` m/s, `max_steer = 0.4189` rad, `clip_actions = 1.0`
+- `contact_margin_m = 0.08`
+- `future_track_num_points = 60`, `future_track_horizon_s = 6.0`, `future_track_width = 2.2`
+- hidden layers `[512, 512, 512]`, activation ReLU, `act_limit = 1.0`

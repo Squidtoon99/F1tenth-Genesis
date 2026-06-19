@@ -1,0 +1,66 @@
+{
+  "configById": {
+    "3D!rlview": {
+      "cameraState": {
+        "distance": 40,
+        "perspective": true,
+        "phi": 30,
+        "thetaOffset": 0,
+        "targetOffset": [0, 0, 0],
+        "fovy": 45,
+        "near": 0.5,
+        "far": 5000
+      },
+      "followMode": "follow-pose",
+      "followTf": "ego_racecar/base_link",
+      "scene": {},
+      "transforms": {},
+      "topics": {
+        "/map": { "visible": true },
+        "/rl/track/markers": { "visible": true },
+        "/rl/obs_debug/future_points": { "visible": true },
+        "/ego_racecar/odom": { "visible": true }
+      },
+      "layers": {}
+    },
+    "Plot!metrics": {
+      "paths": [
+        { "value": "/rl/metrics.data[3]", "label": "lateral_error (m)" },
+        { "value": "/rl/metrics.data[5]", "label": "speed (m/s)" },
+        { "value": "/rl/metrics.data[2]", "label": "max_progress" }
+      ],
+      "showLegend": true,
+      "xAxisVal": "timestamp"
+    },
+    "Plot!action": {
+      "paths": [
+        { "value": "/rl/action.data[0]", "label": "throttle" },
+        { "value": "/rl/action.data[1]", "label": "steering" }
+      ],
+      "showLegend": true,
+      "xAxisVal": "timestamp"
+    },
+    "RawMessages!drive": {
+      "topicPath": "/drive.drive"
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": { "speed": 1 },
+  "layout": {
+    "first": "3D!rlview",
+    "second": {
+      "first": "Plot!metrics",
+      "second": {
+        "first": "Plot!action",
+        "second": "RawMessages!drive",
+        "direction": "column",
+        "splitPercentage": 60
+      },
+      "direction": "column",
+      "splitPercentage": 40
+    },
+    "direction": "row",
+    "splitPercentage": 60
+  }
+}
