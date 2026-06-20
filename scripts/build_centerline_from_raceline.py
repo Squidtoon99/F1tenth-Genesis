@@ -4,7 +4,8 @@
 Input columns (comma or semicolon): s_m, x_m, y_m, psi_rad, ...
 Output columns: x_m, y_m, w_tr_right_m, w_tr_left_m
 
-Source: dfr_f1tenth_gym dev-humble maps/IV_2026_SIM_smooth.csv
+WARNING: raceline (x, y) alone may not sit in the center of the gym occupancy
+map corridor. For deploy / f1tenth_gym, prefer scripts/build_centerline_from_map.py.
 """
 
 from __future__ import annotations
