@@ -69,12 +69,12 @@ DEFAULT_CONFIG = {
         # and episode_length semantics constant.
         "control_interval": 10,
         "sim_dt": 0.01,
-        # Tuned via scripts/sweep_physics_integration.py: every substep count
-        # 2..10 passes the physics_check stability gate for normal upright driving.
-        # NOTE: high-speed (>~4 m/s) spin-outs still NaN the wheel/plane contact
-        # solve regardless of substeps/sim_dt (an effective 0.6ms step still fails),
-        # so that instability is handled via obs clipping + speed-capped reward +
-        # fast OOB termination, not by shrinking the integration step.
+        # Tuned via scripts/sweep_physics_integration.py: substep counts 2..10 pass
+        # the physics_check stability gate for normal upright driving. Raising
+        # substeps does NOT cure the high-speed spin-out contact NaN (confirmed at
+        # 8 substeps / 1.25ms); that instability is driven by the policy being
+        # steered into the boundary, so it is addressed upstream (clean centerline,
+        # obs clipping, speed-capped reward, fast OOB termination), not here.
         "sim_substeps": 4,
         "solver_iterations": 50,
         "solver_ls_iterations": 50,
@@ -128,19 +128,19 @@ DEFAULT_CONFIG = {
         "track": "IV_2026_SIM",
     },
     "reward": {
+        # GT Sophy-aligned reward: course progress (primary), off-course penalty
+        # (~time-off x speed^2), tyre-slip penalty, and a small smoothness shaping
+        # term. No explicit speed reward: speed is induced purely by progress per
+        # step under the gamma=0.9896 discount, exactly as in GT Sophy.
         "progress_k_fwd": 5.0,
         "progress_k_back": 5.0,
         "progress_max_lateral_m": 1.0,
         "oob_margin_m": 0.5,
-        "oob_k": 5.0,
-        "oob_dist_cap_m": 1.0,
-        # Reference speed for the quadratic off-course speed factor 1+(v/v_ref)^2.
-        # Matched to the racing speed target so off-course is punished proportionate
-        # to racing speed rather than over-punishing any motion above a crawl.
-        "oob_speed_ref_mps": 6.0,
-        # Track-aligned speed reward saturates here. Physics is stable well past this
-        # (repro clean to ~15 m/s), so the cap is a racing target, not a NaN guard.
-        "speed_target_mps": 6.0,
+        # GT Sophy off-course penalty R_soc = -(time off course) * speed^2. The
+        # per-step time off course is constant and folds into oob_k; tuned so the
+        # penalty at racing speed (~6 m/s) is comparable to the previous shaping
+        # while escalating quadratically with speed for fast excursions.
+        "oob_k": 0.15,
         # Global downscale applied to the summed reward to keep per-step total and
         # value targets O(1) (progress alone was ~9/step before). Preserves the
         # relative balance between the individual reward terms.
@@ -149,10 +149,6 @@ DEFAULT_CONFIG = {
             "progress": 5.0,
             "oob_penalty": 0.6,
             "tyre_slip_penalty": 0.05,
-            # Dense racing incentive: rewards track-aligned speed up to the target.
-            # Bumped from 1.0 -> 3.0 so speed is competitive with progress and the
-            # policy is pushed to race rather than crawl cautiously.
-            "speed": 3.0,
             # Mild jerk penalty to curb bang-bang throttle/steer.
             "smoothness": 0.05,
         },

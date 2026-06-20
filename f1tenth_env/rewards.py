@@ -127,22 +127,18 @@ def reward_progress(
 def reward_oob_penalty(
     step_state: dict[str, Any], reward_cfg: dict[str, Any]
 ) -> torch.Tensor:
+    # GT Sophy off-course penalty: R_soc = -(time off course) * speed^2. The time
+    # off course over a single control step is constant, so it folds into oob_k;
+    # what remains is a penalty proportional to squared speed while off course (and
+    # exactly zero while on course). This punishes fast excursions far harder than
+    # slow ones and lets the boundary bind without an explicit speed cap.
     margin_m = float(reward_cfg.get("oob_margin_m", 0.5))
-    k_oob = float(reward_cfg.get("oob_k", 10.0))
-    oob_dist_cap = float(reward_cfg.get("oob_dist_cap_m", 1.0))
-    v_ref = float(reward_cfg.get("oob_speed_ref_mps", 3.0))
-    _, oob_dist = compute_oob_from_boundary_state(
+    k_oob = float(reward_cfg.get("oob_k", 0.15))
+    oob_mask, _ = compute_oob_from_boundary_state(
         step_state["boundary"], margin_m=margin_m
     )
-    oob_dist = torch.clamp(oob_dist, max=oob_dist_cap)
-
-    # GT Sophy-style: scale the off-course penalty by (squared) speed so high-speed
-    # excursions are punished far harder than low-speed ones. This makes the speed
-    # limit bind through the penalty and suppresses the fast off-track excursions
-    # that drive the simulator into NaN spin-outs.
     v = torch.linalg.norm(step_state["base_lin_vel"][:, :2], dim=-1)
-    speed_factor = 1.0 + (v / v_ref) ** 2
-    return -k_oob * oob_dist * speed_factor
+    return -k_oob * oob_mask.to(v.dtype) * v * v
 
 
 def reward_speed(
@@ -193,10 +189,11 @@ def reward_tyre_slip_penalty(
     slip_ratio_mag = torch.clamp(torch.abs(slip[:, :4]), max=1.0)
     slip_angle_mag = torch.abs(slip[:, 4:])
 
+    # GT Sophy R_ts = -sum_i min(|slip_ratio_i|, 1.0) * |slip_angle_i| over all four
+    # tyres, with no deadzone: every bit of slip is penalized so the shaping term
+    # nudges the policy toward grip-preserving control at all times.
     per_wheel = slip_ratio_mag * slip_angle_mag
     penalty = -torch.sum(per_wheel, dim=1)
-
-    penalty = torch.where(penalty > -1.0, torch.zeros_like(penalty), penalty)
 
     return penalty
 
@@ -223,18 +220,21 @@ def compute_rewards(
     progress = reward_progress(step_state, reward_cfg)
     oob_penalty = reward_oob_penalty(step_state, reward_cfg)
     tyre_slip_penalty = reward_tyre_slip_penalty(step_state, reward_cfg)
-    speed = reward_speed(step_state, reward_cfg)
     smoothness_penalty = reward_smoothness_penalty(step_state, reward_cfg)
 
-    off_track = oob_penalty < 0.0
+    # GT Sophy masks course progress whenever the agent is off course (anti
+    # corner-cutting). Derive the mask directly from the boundary state: the
+    # off-course penalty is ~v^2 and goes to zero at low speed, so it can no longer
+    # be used as a reliable off-track indicator.
+    off_track, _ = compute_oob_from_boundary_state(
+        step_state["boundary"], margin_m=float(reward_cfg.get("oob_margin_m", 0.5))
+    )
     progress = torch.where(off_track, torch.zeros_like(progress), progress)
-    speed = torch.where(off_track, torch.zeros_like(speed), speed)
 
     scales = reward_cfg["reward_scales"]
     progress *= scales["progress"]
     oob_penalty *= scales["oob_penalty"]
     tyre_slip_penalty *= scales["tyre_slip_penalty"]
-    speed *= scales.get("speed", 0.0)
     smoothness_penalty *= scales.get("smoothness", 0.0)
 
     # Single global knob to shrink overall reward magnitude (keeps the relative
@@ -243,20 +243,16 @@ def compute_rewards(
     progress *= global_scale
     oob_penalty *= global_scale
     tyre_slip_penalty *= global_scale
-    speed *= global_scale
     smoothness_penalty *= global_scale
 
     last_terms: dict[str, torch.Tensor] = {
         "progress": progress.clone(),
         "oob_penalty": oob_penalty.clone(),
         "tyre_slip_penalty": tyre_slip_penalty.clone(),
-        "speed": speed.clone(),
         "smoothness": smoothness_penalty.clone(),
     }
 
-    reward_buf += (
-        progress + oob_penalty + tyre_slip_penalty + speed + smoothness_penalty
-    )
+    reward_buf += progress + oob_penalty + tyre_slip_penalty + smoothness_penalty
 
     reward_state["last_reward_terms"] = last_terms
     return reward_buf, step_state

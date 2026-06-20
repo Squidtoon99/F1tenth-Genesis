@@ -14,10 +14,10 @@ hypotheses:
     hypothesis: "1M buffer + 40k warmup fixes long-horizon learning"
     priority: 1
     args:
-      num_envs: 256
+      num_envs: 512
       precision: "64"
       buffer_capacity: 1000000
-      alpha: 0.1
+      alpha: 0.01
       seed: 42
 
   H2:
@@ -50,7 +50,7 @@ hypotheses:
       num_envs: 128
       precision: "64"
       buffer_capacity: 2000000
-      alpha: 0.1
+      alpha: 0.01
       seed: 45
 
   H5:
@@ -61,7 +61,7 @@ hypotheses:
       num_envs: 256
       precision: "32"
       buffer_capacity: 1000000
-      alpha: 0.1
+      alpha: 0.01
       seed: 46
 
   H6:
@@ -72,6 +72,6 @@ hypotheses:
       num_envs: 256
       precision: "32"
       buffer_capacity: 1000000
-      alpha: 0.1
+      alpha: 0.01
       updates_per_step: 2
       seed: 47

@@ -347,7 +347,7 @@ def select_device(device_arg: str) -> torch.device:
 
 
 def build_models(
-    cfg: dict, device: torch.device, alpha: float = 0.1
+    cfg: dict, device: torch.device, alpha: float = 0.01
 ) -> tuple[Models, QRSACTrainer]:
     # Networks/optimizers stay float32 even when Genesis runs in precision="64"
     # (which flips torch's default dtype to float64); env outputs are bridged to
@@ -408,10 +408,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--alpha",
         type=float,
-        default=0.1,
-        help="SAC entropy coefficient (fixed). Higher keeps exploration alive "
-        "longer so the policy keeps trying fast maneuvers instead of collapsing "
-        "to a cautious crawl.",
+        default=0.01,
+        help="SAC entropy coefficient (fixed). Default 0.01 matches GT Sophy; "
+        "lower temperature lets the policy commit to a fast racing line rather "
+        "than staying overly stochastic.",
     )
     parser.add_argument("--min-train-samples", type=int, default=5000)
     parser.add_argument(
@@ -584,16 +584,20 @@ def main():
                     actions.to(gs.tc_float), n_steps=control_interval
                 )
             except gs.GenesisException as exc:
+                # With sim_substeps raising the rigid solver rate this should be
+                # rare; keep a minimal guard so an isolated transient resets the
+                # batch and advances the step instead of crashing the run.
                 log.warning(
-                    "Genesis raised at step %d (likely NaN constraint forces): %s. "
-                    "Resetting all envs and continuing.",
+                    "Genesis raised at step %d (NaN constraint forces): %s. "
+                    "Resetting envs.",
                     global_step,
                     exc,
                 )
                 obs, _ = env.reset()
                 obs = obs.to(torch.float32)
                 episode_rewards.zero_()
-                if global_step > 0 and global_step % args.ckpt_interval == 0:
+                global_step += 1
+                if global_step % args.ckpt_interval == 0:
                     save_checkpoint(models, global_step, ckpt_dir, normalizer)
                 continue
             next_obs = next_obs.to(torch.float32)
@@ -695,13 +699,12 @@ def main():
 
                 log.info(
                     "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
-                    "progress=%.4f speed=%.4f oob_penalty=%.4f tyre_slip=%.4f "
+                    "progress=%.4f oob_penalty=%.4f tyre_slip=%.4f "
                     "smooth=%.4f | nstep_buf_reward=%.4f mean_Q=%.4f",
                     diag.mean("reward/step"),
                     diag.vmin("reward/step"),
                     diag.vmax("reward/step"),
                     diag.mean("reward_term/progress"),
-                    diag.mean("reward_term/speed"),
                     diag.mean("reward_term/oob_penalty"),
                     diag.mean("reward_term/tyre_slip_penalty"),
                     diag.mean("reward_term/smoothness"),
@@ -748,7 +751,6 @@ def main():
                             "reward/total_min": diag.vmin("reward/step"),
                             "reward/total_max": diag.vmax("reward/step"),
                             "reward/progress": diag.mean("reward_term/progress"),
-                            "reward/speed": diag.mean("reward_term/speed"),
                             "reward/oob_penalty": diag.mean(
                                 "reward_term/oob_penalty"
                             ),
