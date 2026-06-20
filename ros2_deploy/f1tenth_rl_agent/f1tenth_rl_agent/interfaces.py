@@ -73,6 +73,7 @@ CLIP_ACTIONS = 1.0
 CONTACT_MARGIN_M = 0.08
 FUTURE_TRACK_NUM_POINTS = 60
 FUTURE_TRACK_HORIZON_S = 6.0
+FUTURE_TRACK_MIN_LOOKAHEAD_M = 5.0
 FUTURE_TRACK_WIDTH = 2.2
 HIDDEN_LAYERS = [512, 512, 512]
 ACT_LIMIT = 1.0
@@ -92,5 +93,6 @@ def default_obs_cfg() -> dict:
         "contact_margin_m": CONTACT_MARGIN_M,
         "future_track_num_points": FUTURE_TRACK_NUM_POINTS,
         "future_track_horizon_s": FUTURE_TRACK_HORIZON_S,
+        "future_track_min_lookahead_m": FUTURE_TRACK_MIN_LOOKAHEAD_M,
         "future_track_width": FUTURE_TRACK_WIDTH,
     }
