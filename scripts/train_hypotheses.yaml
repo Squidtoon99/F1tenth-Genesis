@@ -1,0 +1,77 @@
+# Shared defaults for all overnight Sophy-aligned runs.
+defaults:
+  total_steps: 500000
+  min_train_samples: 40000
+  ckpt_interval: 10000
+  log_interval: 100
+  track: IV_2026_SIM
+  wandb: true
+  wandb_mode: online
+
+hypotheses:
+  H1:
+    id: sophy_1m_p64
+    hypothesis: "1M buffer + 40k warmup fixes long-horizon learning"
+    priority: 1
+    args:
+      num_envs: 256
+      precision: "64"
+      buffer_capacity: 1000000
+      alpha: 0.1
+      seed: 42
+
+  H2:
+    id: sophy_1m_explore
+    hypothesis: "Collapse from under-exploration — increase entropy"
+    priority: 2
+    args:
+      num_envs: 256
+      precision: "64"
+      buffer_capacity: 1000000
+      alpha: 0.2
+      seed: 43
+
+  H3:
+    id: sophy_1m_stable128
+    hypothesis: "Collapse from sim/GPU pressure — fewer envs"
+    priority: 3
+    args:
+      num_envs: 128
+      precision: "64"
+      buffer_capacity: 1000000
+      alpha: 0.15
+      seed: 44
+
+  H4:
+    id: sophy_2m_p64
+    hypothesis: "H1 healthy — more replay diversity with 2M buffer"
+    priority: 4
+    args:
+      num_envs: 128
+      precision: "64"
+      buffer_capacity: 2000000
+      alpha: 0.1
+      seed: 45
+
+  H5:
+    id: sophy_1m_p32
+    hypothesis: "H1 stable at fp64 — push throughput with fp32"
+    priority: 5
+    args:
+      num_envs: 256
+      precision: "32"
+      buffer_capacity: 1000000
+      alpha: 0.1
+      seed: 46
+
+  H6:
+    id: sophy_1m_updates2
+    hypothesis: "H5 fast but plateaus — double gradient updates per step"
+    priority: 6
+    args:
+      num_envs: 256
+      precision: "32"
+      buffer_capacity: 1000000
+      alpha: 0.1
+      updates_per_step: 2
+      seed: 47
