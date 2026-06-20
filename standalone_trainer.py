@@ -447,6 +447,18 @@ def parse_args() -> argparse.Namespace:
         choices=["online", "offline", "disabled"],
     )
     parser.add_argument("--run-id", type=str, default=None)
+    parser.add_argument(
+        "--wandb-group",
+        type=str,
+        default=None,
+        help="W&B run group for comparing related experiments",
+    )
+    parser.add_argument(
+        "--hypothesis",
+        type=str,
+        default=None,
+        help="Human-readable hypothesis description for W&B metadata",
+    )
     return parser.parse_args()
 
 
@@ -513,12 +525,18 @@ def main():
     if args.wandb:
         import wandb
 
-        wandb_run = wandb.init(
-            project="f1tenth-genesis",
-            name=f"standalone_{run_id}",
-            config={**cfg, **vars(args)},
-            mode=args.wandb_mode,
-        )
+        init_kwargs = {
+            "project": "f1tenth-genesis",
+            "name": f"standalone_{run_id}",
+            "config": {**cfg, **vars(args)},
+            "mode": args.wandb_mode,
+        }
+        if args.wandb_group:
+            init_kwargs["group"] = args.wandb_group
+            init_kwargs["tags"] = [run_id]
+        if args.hypothesis:
+            init_kwargs["notes"] = args.hypothesis
+        wandb_run = wandb.init(**init_kwargs)
 
     obs, _ = env.reset()
     obs = obs.to(torch.float32)
@@ -537,6 +555,12 @@ def main():
 
     try:
         while global_step < args.total_steps:
+            bad_obs_mask = (~torch.isfinite(obs)).any(dim=1)
+            if bad_obs_mask.any():
+                reset_obs, _ = env.reset(envs_idx=bad_obs_mask)
+                obs = obs.clone()
+                obs[bad_obs_mask] = reset_obs[bad_obs_mask].to(torch.float32)
+
             if buffer.size < args.min_train_samples:
                 actions = (
                     torch.rand(
@@ -560,14 +584,18 @@ def main():
                     actions.to(gs.tc_float), n_steps=control_interval
                 )
             except gs.GenesisException as exc:
-                log.error(
+                log.warning(
                     "Genesis raised at step %d (likely NaN constraint forces): %s. "
-                    "Saving checkpoint and stopping.",
+                    "Resetting all envs and continuing.",
                     global_step,
                     exc,
                 )
-                save_checkpoint(models, global_step, ckpt_dir, normalizer)
-                break
+                obs, _ = env.reset()
+                obs = obs.to(torch.float32)
+                episode_rewards.zero_()
+                if global_step > 0 and global_step % args.ckpt_interval == 0:
+                    save_checkpoint(models, global_step, ckpt_dir, normalizer)
+                continue
             next_obs = next_obs.to(torch.float32)
             reward = reward.to(torch.float32)
             episode_rewards += reward
@@ -583,8 +611,9 @@ def main():
             accumulate_step_diagnostics(diag, reward, actions, obs, extras)
             diag.add_mean("obs/norm_abs", normalizer.normalize(obs).abs())
 
+            bad_obs_mask = (~torch.isfinite(next_obs)).any(dim=1)
             finite_ok = bool(
-                torch.isfinite(reward).all() and torch.isfinite(next_obs).all()
+                torch.isfinite(reward).all() and not bad_obs_mask.any()
             )
             if finite_ok:
                 buffer.add(obs, actions, reward, next_obs, done)
@@ -593,9 +622,7 @@ def main():
                 normalizer.update(next_obs)
             else:
                 n_bad_reward = int((~torch.isfinite(reward)).sum().item())
-                n_bad_obs_envs = int(
-                    (~torch.isfinite(next_obs)).any(dim=1).sum().item()
-                )
+                n_bad_obs_envs = int(bad_obs_mask.sum().item())
                 log.warning(
                     "Non-finite step at %d (reward_bad=%d obs_bad_envs=%d); "
                     "skipping buffer add.",
@@ -603,6 +630,10 @@ def main():
                     n_bad_reward,
                     n_bad_obs_envs,
                 )
+                if n_bad_obs_envs > 0:
+                    reset_obs, _ = env.reset(envs_idx=bad_obs_mask)
+                    next_obs = next_obs.clone()
+                    next_obs[bad_obs_mask] = reset_obs[bad_obs_mask].to(torch.float32)
             obs = next_obs
             global_step += 1
 
