@@ -24,7 +24,7 @@ policy_inference:
 
 drive_command:
   ros__parameters:
-    max_speed: 10.0
+    max_speed: 5.0
     max_steer: 0.4189
     clip_actions: 1.0
     watchdog_timeout_s: 0.5
@@ -39,3 +39,8 @@ evaluation:
     reset_y: 0.0
     reset_yaw: 0.1
     auto_reset: true
+    random_reset: true
+    random_spawn_on_start: true
+    reset_seed: -1
+    map_yaml: "/sim_ws/src/f1tenth_gym_ros/maps/Oschersleben_map.yaml"
+    spawn_max_dist: 1.0

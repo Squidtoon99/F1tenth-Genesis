@@ -15,7 +15,7 @@ observation_builder:
     # If the simulator publishes odom twist in the world frame instead of body frame,
     # set this True to rotate linear velocity into the body frame before building obs.
     twist_in_world_frame: false
-    publish_debug_markers: true
+    publish_debug_markers: false
 
 policy_inference:
   ros__parameters:
@@ -33,9 +33,9 @@ policy_inference:
 
 drive_command:
   ros__parameters:
-    # Match training DEFAULT_CONFIG (config.py): max_speed=15.0, delta_max=0.44.
-    max_speed: 15.0
-    max_steer: 0.44
+    # Cap below training envelope (~3–6 m/s in Genesis) to reduce wall collisions in gym.
+    max_speed: 3.0
+    max_steer: 0.30
     clip_actions: 1.0
     watchdog_timeout_s: 0.5
     # "stop" -> negative throttle commands zero speed; "reverse" -> allow negative speed.
@@ -46,8 +46,15 @@ evaluation:
     oob_margin_m: 0.0
     stuck_speed_mps: 0.2
     stuck_timeout_s: 3.0
-    # Match dfr_f1tenth_gym dev-humble config/sim.yaml ego start (sx, sy, stheta).
+    # Fixed fallback pose when random_reset is false.
     reset_x: 0.0
     reset_y: 2.0
     reset_yaw: -0.9
     auto_reset: true
+    random_reset: true
+    random_spawn_on_start: true
+    reset_seed: -1
+    # Gym-compatible free-cell spawns (AllMapResetFn dilation); matches gym bridge maps/.
+    map_yaml: "/sim_ws/src/f1tenth_gym_ros/maps/IV_2026_SIM.yaml"
+    spawn_max_dist: 1.0
+    reset_grace_s: 2.0
