@@ -1,5 +1,7 @@
 # f1tenth_rl_agent - ROS 2 deployment of the trained QRSAC policy
 
+**First time with Docker + a trained checkpoint?** See [`DOCKER_QUICKSTART.md`](DOCKER_QUICKSTART.md).
+
 This folder contains a ROS 2 Humble stack that runs the trained
 `SquashedGaussianMLPActor` policy in closed loop against the
 [`f1tenth_gym_ros`](https://github.com/RMin280/dfr_f1tenth_gym/tree/dev-humble)

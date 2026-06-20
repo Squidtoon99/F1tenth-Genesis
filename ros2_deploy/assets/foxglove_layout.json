@@ -17,8 +17,9 @@
       "transforms": {},
       "topics": {
         "/map": { "visible": true },
-        "/rl/track/markers": { "visible": true },
-        "/rl/obs_debug/future_points": { "visible": true },
+        "/rl/track/markers": { "visible": true, "showOutlines": false },
+        "/rl/obs_debug/future_points": { "visible": false },
+        "/scan": { "visible": false },
         "/ego_racecar/odom": { "visible": true }
       },
       "layers": {}

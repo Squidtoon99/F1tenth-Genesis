@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import torch
 import genesis as gs
+import genesis.utils.geom as gu
 
 URDF_PATH = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "F110.export.urdf")
@@ -71,7 +72,17 @@ def compute_tyre_slip(
     Wheel order: [left_rear, right_rear, left_front, right_front].
     Returns (N, 8): [slip_ratio x4, slip_angle x4].
     """
-    lin_vel_local = wheel_state["motion_link_vel"]
+    # motion_link_vel is the wheel link-COM velocity in the WORLD frame. Slip is a
+    # wheel-frame quantity (column 0 = forward, column 1 = lateral), so rotate the
+    # velocity into each wheel's frame using frame_quat (base_link for the rear
+    # wheels, the steering hinge for the front wheels) before splitting it.
+    lin_vel = wheel_state["motion_link_vel"]
+    frame_quat = wheel_state.get("frame_quat")
+    if frame_quat is not None:
+        lin_vel_local = gu.inv_transform_by_quat(lin_vel, frame_quat)
+    else:
+        # No frame given: treat the velocity as already wheel-frame (unit tests).
+        lin_vel_local = lin_vel
     spin_rate = wheel_state["dof_vel"]
 
     v_fwd = lin_vel_local[:, :, 0]

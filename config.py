@@ -54,6 +54,11 @@ DEFAULT_CONFIG = {
         "contact_margin_m": 0.08,
         "future_track_num_points": 60,
         "future_track_horizon_s": 6.0,
+        # Floor for the speed-scaled lookahead so the policy still sees the upcoming
+        # track while stopped/crawling (speed*horizon -> 0 collapses all samples
+        # onto the current point). Only affects speeds below
+        # future_track_min_lookahead_m / future_track_horizon_s.
+        "future_track_min_lookahead_m": 5.0,
         "future_track_width": 2.2,
     },
     "env": {

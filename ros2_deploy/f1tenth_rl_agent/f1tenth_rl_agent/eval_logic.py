@@ -6,7 +6,30 @@ progress / lateral-error / speed samples so it can be unit-tested deterministica
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+
+import numpy as np
+
+
+def sample_centerline_pose(
+    centerline: np.ndarray,
+    rng: np.random.Generator,
+) -> tuple[float, float, float]:
+    """Pick a random on-track pose aligned with the local centerline tangent."""
+    if len(centerline) < 2:
+        raise ValueError("centerline must have at least two points")
+    idx = int(rng.integers(0, len(centerline)))
+    x, y = float(centerline[idx, 0]), float(centerline[idx, 1])
+    next_idx = (idx + 1) % len(centerline)
+    dx = float(centerline[next_idx, 0] - centerline[idx, 0])
+    dy = float(centerline[next_idx, 1] - centerline[idx, 1])
+    if math.hypot(dx, dy) < 1e-6:
+        prev_idx = (idx - 1) % len(centerline)
+        dx = float(centerline[idx, 0] - centerline[prev_idx, 0])
+        dy = float(centerline[idx, 1] - centerline[prev_idx, 1])
+    yaw = math.atan2(dy, dx)
+    return x, y, yaw
 
 
 @dataclass

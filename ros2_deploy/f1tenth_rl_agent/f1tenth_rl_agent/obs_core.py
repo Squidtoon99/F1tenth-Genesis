@@ -241,8 +241,9 @@ def obs_future_track_points(
     s0 = frenet_state["s"]
     total_len = frenet_state["L"].clamp(min=1e-6)
 
+    min_lookahead = float(obs_cfg.get("future_track_min_lookahead_m", 5.0))
     speed = torch.linalg.vector_norm(lin_vel, dim=-1)
-    lookahead = speed * horizon_s
+    lookahead = torch.clamp(speed * horizon_s, min=min_lookahead)
 
     steps = torch.arange(1, samples + 1, device=device, dtype=TC_FLOAT) / samples
     s_targets = s0.unsqueeze(1) + lookahead.unsqueeze(1) * steps.unsqueeze(0)
