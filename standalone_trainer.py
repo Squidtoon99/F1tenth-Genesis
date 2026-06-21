@@ -664,6 +664,9 @@ def main():
             accumulate_step_diagnostics(diag, reward, actions, obs, extras)
             diag.add_mean("obs/norm_abs", normalizer.normalize(obs).abs())
 
+            if args.opponent != "none" and obs.shape[-1] > 380:
+                diag.add_mean("metric/opponent_presence", obs[:, -1])
+
             bad_obs_mask = (~torch.isfinite(next_obs)).any(dim=1)
             finite_ok = bool(
                 torch.isfinite(reward).all() and not bad_obs_mask.any()
@@ -746,20 +749,37 @@ def main():
                     else float("nan")
                 )
 
-                log.info(
-                    "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
-                    "progress=%.4f oob_penalty=%.4f tyre_slip=%.4f "
-                    "smooth=%.4f | nstep_buf_reward=%.4f mean_Q=%.4f",
-                    diag.mean("reward/step"),
-                    diag.vmin("reward/step"),
-                    diag.vmax("reward/step"),
-                    diag.mean("reward_term/progress"),
-                    diag.mean("reward_term/oob_penalty"),
-                    diag.mean("reward_term/tyre_slip_penalty"),
-                    diag.mean("reward_term/smoothness"),
-                    nstep_buf_reward_mean,
-                    mean_q,
-                )
+                if args.opponent != "none":
+                    log.info(
+                        "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
+                        "progress=%.4f passing=%.4f oob_penalty=%.4f tyre_slip=%.4f "
+                        "smooth=%.4f | nstep_buf_reward=%.4f mean_Q=%.4f",
+                        diag.mean("reward/step"),
+                        diag.vmin("reward/step"),
+                        diag.vmax("reward/step"),
+                        diag.mean("reward_term/progress"),
+                        diag.mean("reward_term/passing"),
+                        diag.mean("reward_term/oob_penalty"),
+                        diag.mean("reward_term/tyre_slip_penalty"),
+                        diag.mean("reward_term/smoothness"),
+                        nstep_buf_reward_mean,
+                        mean_q,
+                    )
+                else:
+                    log.info(
+                        "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
+                        "progress=%.4f oob_penalty=%.4f tyre_slip=%.4f "
+                        "smooth=%.4f | nstep_buf_reward=%.4f mean_Q=%.4f",
+                        diag.mean("reward/step"),
+                        diag.vmin("reward/step"),
+                        diag.vmax("reward/step"),
+                        diag.mean("reward_term/progress"),
+                        diag.mean("reward_term/oob_penalty"),
+                        diag.mean("reward_term/tyre_slip_penalty"),
+                        diag.mean("reward_term/smoothness"),
+                        nstep_buf_reward_mean,
+                        mean_q,
+                    )
                 log.info(
                     "  env: speed=%.3f lat_err=%.3f oob_frac=%.3f progress_ds=%.4f | "
                     "throttle[%.2f..%.2f] steer[%.2f..%.2f] obs_absmax=%.2f "
@@ -775,14 +795,27 @@ def main():
                     diag.vmax("obs/abs"),
                     diag.vmax("obs/norm_abs"),
                 )
-                log.info(
-                    "  terminations: time_out=%d oob=%d not_moving=%d invalid=%d lap=%d",
-                    int(diag.total("term/time_out")),
-                    int(diag.total("term/out_of_bounds")),
-                    int(diag.total("term/not_moving")),
-                    int(diag.total("term/invalid_state")),
-                    int(diag.total("term/lap_finished")),
-                )
+                if args.opponent != "none":
+                    log.info(
+                        "  terminations: time_out=%d oob=%d collision=%d "
+                        "not_moving=%d invalid=%d lap=%d | opp_presence=%.3f",
+                        int(diag.total("term/time_out")),
+                        int(diag.total("term/out_of_bounds")),
+                        int(diag.total("term/collision")),
+                        int(diag.total("term/not_moving")),
+                        int(diag.total("term/invalid_state")),
+                        int(diag.total("term/lap_finished")),
+                        diag.mean("metric/opponent_presence"),
+                    )
+                else:
+                    log.info(
+                        "  terminations: time_out=%d oob=%d not_moving=%d invalid=%d lap=%d",
+                        int(diag.total("term/time_out")),
+                        int(diag.total("term/out_of_bounds")),
+                        int(diag.total("term/not_moving")),
+                        int(diag.total("term/invalid_state")),
+                        int(diag.total("term/lap_finished")),
+                    )
 
                 if wandb_run is not None:
                     wandb_run.log(
