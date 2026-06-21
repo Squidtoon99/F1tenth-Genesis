@@ -138,6 +138,75 @@ def obs_tyre_slip(step_state: dict[str, Any]) -> torch.Tensor:
     return step_state["tyre_slip"]
 
 
+def obs_opponent(
+    self_agent: dict[str, torch.Tensor],
+    other_agent: dict[str, torch.Tensor],
+    obs_cfg: dict[str, Any],
+    present: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Symmetric opponent-relative observation block (default K=7).
+
+    Built from "self"'s ego frame with "other" as the opponent, so the exact same
+    function serves the ego (other = opponent) and the opponent's own egocentric
+    observation (other = ego). Components, in order:
+
+    0,1  other position relative to self, rotated into self's body frame (m)
+    2,3  other velocity relative to self, rotated into self's body frame (m/s)
+    4    signed along-track gap ``s_other - s_self`` wrapped to ``[-L/2, L/2]`` and
+         normalized by ``L/2`` (so it lives in ``[-1, 1]``; positive => other ahead)
+    5    other's signed lateral offset from the centerline ``ey_other`` (m)
+    6    presence flag (1.0 if the opponent is present, else 0.0)
+
+    Each ``*_agent`` dict provides ``pos_xy (B,2)``, ``yaw (B,)``,
+    ``vel_xy (B,2)`` (world frame), ``s (B,)``, ``ey (B,)`` and ``L`` (``(B,)`` or
+    scalar). When ``present`` is False for a row, the entire block (including the
+    presence flag) is zeroed - this is the exact 1v0 sentinel.
+    """
+    pos_s = self_agent["pos_xy"]
+    yaw_s = self_agent["yaw"].reshape(-1)
+    vel_s = self_agent["vel_xy"]
+    s_s = self_agent["s"].reshape(-1)
+
+    pos_o = other_agent["pos_xy"]
+    vel_o = other_agent["vel_xy"]
+    s_o = other_agent["s"].reshape(-1)
+    ey_o = other_agent["ey"].reshape(-1)
+
+    track_len = self_agent["L"]
+    if not torch.is_tensor(track_len):
+        track_len = torch.as_tensor(track_len, dtype=s_s.dtype, device=s_s.device)
+    track_len = track_len.reshape(-1).to(s_s.dtype)
+
+    cos_y = torch.cos(yaw_s)
+    sin_y = torch.sin(yaw_s)
+
+    d = pos_o - pos_s
+    rel_x = cos_y * d[:, 0] + sin_y * d[:, 1]
+    rel_y = -sin_y * d[:, 0] + cos_y * d[:, 1]
+
+    dv = vel_o - vel_s
+    rel_vx = cos_y * dv[:, 0] + sin_y * dv[:, 1]
+    rel_vy = -sin_y * dv[:, 0] + cos_y * dv[:, 1]
+
+    gap = s_o - s_s
+    half = 0.5 * track_len
+    gap = torch.where(gap > half, gap - track_len, gap)
+    gap = torch.where(gap < -half, gap + track_len, gap)
+    gap_norm = gap / half.clamp_min(1e-6)
+
+    if present is None:
+        present_f = torch.ones_like(rel_x)
+    else:
+        present_f = present.reshape(-1).to(rel_x.dtype)
+
+    block = torch.stack(
+        [rel_x, rel_y, rel_vx, rel_vy, gap_norm, ey_o, present_f], dim=-1
+    )
+    # Zero the whole block (incl. presence flag) where the opponent is absent so
+    # the 1v0 sentinel is exactly zeros.
+    return block * present_f.unsqueeze(-1)
+
+
 def build_observation(
     num_obs: int,
     num_envs: int,
@@ -150,6 +219,7 @@ def build_observation(
     obs_cfg: dict[str, Any],
     step_state: dict[str, Any],
     device: torch.device,
+    opponent_block: torch.Tensor | None = None,
 ) -> torch.Tensor:
     obs_scales = obs_cfg.get("obs_scales", {})
     lin_vel_scale = float(obs_scales.get("lin_vel", 1.0))
@@ -175,6 +245,15 @@ def build_observation(
         ),
         obs_tyre_slip(step_state),
     )
+
+    # 1v1: append the opponent-relative block as the final component. When
+    # enabled but no block is provided (e.g. opponent absent for this batch), use
+    # the exact zero sentinel so num_obs stays consistent.
+    if bool(obs_cfg.get("enable_opponent_obs", False)):
+        opp_dim = int(obs_cfg.get("opponent_obs_dim", 7))
+        if opponent_block is None:
+            opponent_block = base_lin_vel.new_zeros((num_envs, opp_dim))
+        components = components + (opponent_block,)
 
     # Write components into a single freshly-allocated buffer via slice copies
     # instead of torch.concatenate. This drops the concatenate output allocation

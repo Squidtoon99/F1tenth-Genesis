@@ -281,3 +281,47 @@ are invalid and a retrain is required.
   full sim-to-real parity.
 - Frenet projection far-off-track/vertex robustness (audit verdict: correct in the
   trained regime).
+
+---
+
+## 1v1 opponent observation block (`[380:387]`, opt-in)
+
+When 1v1 racing is enabled (`obs_cfg["enable_opponent_obs"] = True`, set by the
+standalone trainer for `--opponent scripted|policy`), an opponent-relative block of
+`opponent_obs_dim` (default **7**) values is appended to the base 380-dim vector, so
+`num_obs` becomes **387**. When disabled (solo / 1v0) the observation is exactly the
+380-dim vector documented above - unchanged, byte-for-byte.
+
+The block is produced by `observations.obs_opponent(self_agent, other_agent, ...)`
+and is written **symmetrically** (self-frame, "other" = the opposing car) so the same
+function builds the ego's opponent features (other = opponent) and, for a future
+self-play `PolicyOpponent`, the opponent's own egocentric observation (other = ego).
+
+Layout (offsets relative to the start of the block at index 380):
+
+| Index   | Component                          | Definition |
+|---------|------------------------------------|------------|
+| `[0:2]` | opponent position, self body frame | world delta `(opp_pos - self_pos)` rotated by `-self_yaw`; `+x` ahead, `+y` left, meters |
+| `[2:4]` | opponent velocity, self body frame | world delta `(opp_vel - self_vel)` rotated by `-self_yaw`, m/s |
+| `[4]`   | signed along-track gap (normalized)| `wrap(s_opp - s_self)` into `[-L/2, L/2]`, divided by `L/2` -> `[-1, 1]`; positive = opponent ahead |
+| `[5]`   | opponent lateral offset `ey_opp`   | opponent signed distance from the centerline, meters |
+| `[6]`   | presence flag                      | `1.0` when an opponent is present, else `0.0` |
+
+**Sentinel:** when the opponent is absent for a row (`present = False`), the entire
+block (including the presence flag) is the exact zero vector. This is the value the
+network must see when there is no opponent.
+
+### Deployment parity requirement (ros2_deploy)
+
+The Genesis-free ROS port [obs_core.py](ros2_deploy/f1tenth_rl_agent/f1tenth_rl_agent/obs_core.py)
+currently builds only the 380-dim base vector. To deploy a 1v1 checkpoint it must
+append the same 7-dim opponent block, computed from perception:
+
+- Populate `[380:382]`/`[382:384]` from the detected opponent's relative position and
+  velocity in the ego body frame, `[384]` from the signed along-track gap, `[385]`
+  from the opponent's lateral offset, and `[386] = 1.0`.
+- When no opponent is detected, emit the **zero sentinel** (`[380:387] = 0`, presence
+  `0.0`) - matching the training-time sentinel exactly.
+- Mirror `obs_opponent` (and add a parity test alongside `test_obs_parity.py`). This
+  wiring is a follow-up to be done once a trained 1v1 checkpoint exists; the obs
+  contract above is the spec it must satisfy.

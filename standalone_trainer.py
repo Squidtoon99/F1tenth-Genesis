@@ -337,6 +337,21 @@ def build_config(args: argparse.Namespace) -> dict:
     cfg["env"]["track"] = args.track
     if args.n_step is not None:
         cfg["model"]["n_step"] = args.n_step
+
+    # 1v1: enable the opponent + opponent observation block + passing reward.
+    # Trained from scratch, so we just size the networks/normalizer at the larger
+    # num_obs - no checkpoint surgery. 1v0 (opponent "none") leaves everything as
+    # the unchanged solo config.
+    if args.opponent != "none":
+        cfg["env"]["opponent_strategy"] = args.opponent
+        cfg["env"]["opponent_target_speed"] = args.opponent_target_speed
+        cfg["env"]["opponent_spawn_gap_m"] = args.opponent_spawn_gap
+        if args.opponent_ckpt is not None:
+            cfg["env"]["opponent_ckpt"] = args.opponent_ckpt
+        cfg["obs"]["enable_opponent_obs"] = True
+        cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
+        # Activate the passing reward term (gated by presence of this scale).
+        cfg["reward"]["reward_scales"]["passing"] = args.passing_scale
     return cfg
 
 
@@ -421,6 +436,40 @@ def parse_args() -> argparse.Namespace:
         help=f"N-step horizon (default: {cfg['model']['n_step']} from config)",
     )
     parser.add_argument("--track", type=str, default=cfg["env"]["track"])
+    parser.add_argument(
+        "--opponent",
+        type=str,
+        default="none",
+        choices=["none", "scripted", "policy"],
+        help="1v1 opponent: 'none' (solo/1v0), 'scripted' (centerline follower), "
+        "or 'policy' (frozen-policy self-play opponent).",
+    )
+    parser.add_argument(
+        "--opponent-target-speed",
+        type=float,
+        default=cfg["env"]["opponent_target_speed"],
+        help="Scripted opponent target speed (m/s); keep below ego pace so an "
+        "overtake is feasible.",
+    )
+    parser.add_argument(
+        "--opponent-spawn-gap",
+        type=float,
+        default=cfg["env"]["opponent_spawn_gap_m"],
+        help="Meters the opponent spawns ahead of the ego on the centerline.",
+    )
+    parser.add_argument(
+        "--opponent-ckpt",
+        type=str,
+        default=None,
+        help="Checkpoint for the 'policy' opponent (deferred self-play path).",
+    )
+    parser.add_argument(
+        "--passing-scale",
+        type=float,
+        default=0.5,
+        help="Reward scale for the 1v1 passing term (track position gained on the "
+        "opponent). Only used when --opponent is not 'none'.",
+    )
     parser.add_argument(
         "--device",
         type=str,
