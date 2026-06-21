@@ -75,6 +75,16 @@ def invalid_state_mask(
     return (~finite_ok) | heading_bad
 
 
+def collision_mask(
+    ego_pos_xy: torch.Tensor,
+    opp_pos_xy: torch.Tensor,
+    collision_dist_m: float,
+) -> torch.Tensor:
+    """1v1 collision predicate: the two cars are within ``collision_dist_m`` (xy)."""
+    sep = torch.linalg.norm(ego_pos_xy - opp_pos_xy, dim=-1)
+    return sep < float(collision_dist_m)
+
+
 def compute_terminations(
     step_state: dict[str, Any],
     episode_steps_buf: torch.Tensor,

@@ -15,13 +15,15 @@ from .car import (
     compute_wheel_torques,
     setup_entity_controls,
 )
-from .observations import build_observation
+from .observations import build_observation, obs_opponent
+from .opponents import OpponentContext, make_opponent
 from .rewards import (
     compute_rewards,
     init_reward_state,
     sync_progress_state_for_resets,
 )
 from .terminations import (
+    collision_mask,
     compute_terminations,
     init_termination_params,
     init_termination_state,
@@ -172,6 +174,16 @@ class F1tenthEnv:
         )
         if self.opponent is not None:
             setup_entity_controls(self.opponent, self.env_cfg)
+            self.opponent_ctrl = make_opponent(self.env_cfg, self.obs_cfg, self.device)
+        else:
+            self.opponent_ctrl = None
+
+        # Mean centerline segment length, used to convert the opponent spawn gap
+        # (meters) into a centerline index offset.
+        seg = self.centerline_t[1:] - self.centerline_t[:-1]
+        self._mean_seg_len = float(
+            torch.linalg.norm(seg, dim=-1).mean().clamp_min(1e-6).item()
+        )
 
         self.vehicle_mass = 3.74
         self.base_link_idx = self.car.get_link("base_link").idx
@@ -208,6 +220,29 @@ class F1tenthEnv:
         self.base_quat = torch.empty(
             (self.num_envs, 4), dtype=gs.tc_float, device=gs.device
         )
+        # World-frame ego velocity, retained for the opponent-relative observation
+        # block (which works in world deltas rotated into each car's body frame).
+        self.base_vel_world = torch.zeros(
+            (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+        )
+
+        # Opponent state buffers (only used when an opponent entity exists).
+        if self.opponent is not None:
+            self.opp_base_pos = torch.zeros(
+                (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+            )
+            self.opp_base_quat = torch.zeros(
+                (self.num_envs, 4), dtype=gs.tc_float, device=gs.device
+            )
+            self.opp_vel_world = torch.zeros(
+                (self.num_envs, 3), dtype=gs.tc_float, device=gs.device
+            )
+            self.opp_steer_state = torch.zeros(
+                (self.num_envs,), dtype=gs.tc_float, device=gs.device
+            )
+            self.opp_last_actions = torch.zeros(
+                (self.num_envs, self.num_actions), dtype=gs.tc_float, device=gs.device
+            )
 
         self.obs_buf = torch.zeros(
             (self.num_envs, self.num_obs), dtype=gs.tc_float, device=gs.device
@@ -445,13 +480,29 @@ class F1tenthEnv:
         car.set_quat(quat, envs_idx=mask, zero_velocity=True, relative=False)
 
         if self.opponent is not None:
-            opp_pos, opp_quat = self._sample_track_spawn_batch()
+            # Spawn the opponent a fixed arc-length ahead of the ego so an overtake
+            # is the natural task. Convert the desired gap (m) into a centerline
+            # index offset and place the opponent at ego_idx + offset.
+            gap_m = float(self.env_cfg.get("opponent_spawn_gap_m", 7.0))
+            gap_pts = max(1, int(round(gap_m / self._mean_seg_len)))
+            ego_idx = self._closest_centerline_indices(pos[:, :2])
+            opp_idx = (ego_idx + gap_pts) % self.num_pts
+            opp_pos, opp_quat = self._sample_track_spawn_batch(centerline_idx=opp_idx)
             self.opponent.set_pos(
                 opp_pos, envs_idx=mask, zero_velocity=True, relative=False
             )
             self.opponent.set_quat(
                 opp_quat, envs_idx=mask, zero_velocity=True, relative=False
             )
+            self.opp_steer_state = torch.where(
+                mask, torch.zeros_like(self.opp_steer_state), self.opp_steer_state
+            )
+            m_opp = mask.unsqueeze(1)
+            self.opp_last_actions = torch.where(
+                m_opp, torch.zeros_like(self.opp_last_actions), self.opp_last_actions
+            )
+            if self.opponent_ctrl is not None:
+                self.opponent_ctrl.reset(mask)
 
         # Non-zero launch speed needs explicit dof velocity/steering setters, which
         # in Genesis 0.4.3 require index-based envs (one nonzero sync). This path is
@@ -580,8 +631,15 @@ class F1tenthEnv:
         self.base_pos = car.get_pos()
         self.base_quat = quat
 
-        self.base_lin_vel = gu.inv_transform_by_quat(car.get_vel(), quat)
+        vel_world = car.get_vel()
+        self.base_vel_world = vel_world
+        self.base_lin_vel = gu.inv_transform_by_quat(vel_world, quat)
         self.base_ang_vel = gu.inv_transform_by_quat(car.get_ang(), quat)
+
+        if self.opponent is not None:
+            self.opp_base_pos = self.opponent.get_pos()
+            self.opp_base_quat = self.opponent.get_quat()
+            self.opp_vel_world = self.opponent.get_vel()
 
         self.base_lin_acc = gu.inv_transform_by_quat(
             car.get_links_acc(links_idx_local=[self.base_link_idx_local])[:, 0, :],
@@ -592,6 +650,7 @@ class F1tenthEnv:
 
     def _update_observation(self):
         step_state = self._get_step_state()
+        opponent_block = self._ego_opponent_block(step_state)
         self.obs_buf = self._build_observation(
             num_obs=self.num_obs,
             num_envs=self.num_envs,
@@ -604,6 +663,7 @@ class F1tenthEnv:
             obs_cfg=self.obs_cfg,
             step_state=step_state,
             device=self.device,
+            opponent_block=opponent_block,
         )
 
     def _compute_rewards(self):
@@ -611,6 +671,9 @@ class F1tenthEnv:
         step_state["base_lin_vel"] = self.base_lin_vel
         step_state["actions"] = self.actions
         step_state["last_actions"] = self.last_actions
+        if self.opponent is not None:
+            opp_ss = self._opponent_step_state(self.opp_base_pos)
+            step_state["opp_s"] = opp_ss["frenet"]["s"]
         self.reward_buf, self._step_state = compute_rewards(
             step_state=step_state,
             reward_cfg=self.reward_cfg,
@@ -637,6 +700,20 @@ class F1tenthEnv:
                 term_params=self.term_params,
             )
         )
+
+        # Collision termination (1v1): end the episode when the two cars are within
+        # collision_dist_m of each other. This is the entire collision-handling
+        # story - there is no shaped collision penalty; ending the episode forfeits
+        # all future progress reward, which is a sufficient avoidance incentive.
+        if self.opponent is not None and bool(
+            self.env_cfg.get("term_on_collision", True)
+        ):
+            collision_dist = float(self.env_cfg.get("collision_dist_m", 0.4))
+            collision = collision_mask(
+                self.base_pos[:, :2], self.opp_base_pos[:, :2], collision_dist
+            )
+            self.reset_buf = self.reset_buf | collision
+            self.extras["termination"]["collision"] = collision.to(dtype=gs.tc_float)
 
         boundary = step_state["boundary"]
         oob_mask, oob_dist = compute_oob_from_boundary_state(
@@ -702,57 +779,183 @@ class F1tenthEnv:
         self.extras["observations"]["critic"] = self.obs_buf
         return self.obs_buf, self.extras
 
-    def _apply_actions(
-        self, exec_actions: torch.Tensor, env_ids: torch.Tensor | None = None
-    ):
-        """
-        Apply force-based throttle/brake and lagged steering controls.
-        """
-        if env_ids is None:
-            env_ids = torch.arange(self.num_envs, device=self.device)
+    def _actuate_entity(
+        self,
+        entity: Any,
+        exec_actions: torch.Tensor,
+        steer_state: torch.Tensor,
+        base_vel_body: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply force-based throttle/brake and lagged steering to one entity.
 
+        Entity-generic so it drives both the ego car and the opponent (both share
+        the same URDF, hence the same local wheel/steer dof indices). Returns the
+        updated ``steer_state`` for the caller to store.
+        """
         throttle_cmd = exec_actions[:, 0]
         steer = exec_actions[:, 1]
 
         delta_max = float(
-            self.env_cfg.get(
-                "delta_max", self.env_cfg.get("max_steer", 0.44)
-            )
+            self.env_cfg.get("delta_max", self.env_cfg.get("max_steer", 0.44))
         )
         delta_cmd = torch.clamp(steer * delta_max, min=-delta_max, max=delta_max)
 
-        self.steer_state[env_ids] = self.steer_state[env_ids] + self.steer_lag_alpha * (
-            delta_cmd[env_ids] - self.steer_state[env_ids]
-        )
-        delta_center = self.steer_state[env_ids]
+        steer_state = steer_state + self.steer_lag_alpha * (delta_cmd - steer_state)
 
         steer_targets = ackermann_left_right(
-            delta_center=delta_center,
+            delta_center=steer_state,
             L=self.env_cfg.get("wheelbase", 0.325),
             W=self.env_cfg.get("track_width", 0.20),
         )
 
-        base_vel_body = self.base_lin_vel[env_ids]
-        wheel_dof_vel = self.car.get_dofs_velocity(
-            dofs_idx_local=self.wheel_dofs, envs_idx=env_ids
-        )
+        wheel_dof_vel = entity.get_dofs_velocity(dofs_idx_local=self.wheel_dofs)
         wheel_torques = compute_wheel_torques(
-            throttle_cmd=throttle_cmd[env_ids],
+            throttle_cmd=throttle_cmd,
             base_lin_vel_body=base_vel_body,
             wheel_dof_vel=wheel_dof_vel,
             env_cfg=self.env_cfg,
             vehicle_mass=self.vehicle_mass,
         )
 
-        car = self.car  # type: Any
-        car.control_dofs_force(
-            wheel_torques.to(device=gs.device),
-            self.wheel_dofs,
-            envs_idx=env_ids,
+        entity.control_dofs_force(wheel_torques.to(device=gs.device), self.wheel_dofs)
+        entity.control_dofs_position(
+            steer_targets.to(device=gs.device), self.steer_dofs
         )
-        car.control_dofs_position(
-            steer_targets.to(device=gs.device), self.steer_dofs, envs_idx=env_ids
+        return steer_state
+
+    def _apply_actions(
+        self, exec_actions: torch.Tensor, env_ids: torch.Tensor | None = None
+    ):
+        """Apply force-based throttle/brake and lagged steering to the ego car."""
+        self.steer_state = self._actuate_entity(
+            self.car, exec_actions, self.steer_state, self.base_lin_vel
         )
+
+    def _opponent_step_state(self, pos: torch.Tensor) -> dict[str, Any]:
+        """Frenet/boundary/obs-track state for the opponent (separate geom cache)."""
+        return build_step_state(
+            base_pos=pos,
+            episode_steps_buf=self.episode_steps_buf,
+            track_state=self.track_state,
+            device=self.device,
+            cache_id="opponent",
+        )
+
+    def _agent_state(
+        self,
+        pos: torch.Tensor,
+        quat: torch.Tensor,
+        vel_world: torch.Tensor,
+        step_state: dict[str, Any],
+    ) -> dict[str, torch.Tensor]:
+        """Pack the per-car fields the symmetric opponent-obs block needs."""
+        yaw = gu.quat_to_xyz(quat, rpy=True, degrees=False)[:, 2]
+        return {
+            "pos_xy": pos[:, :2],
+            "yaw": yaw,
+            "vel_xy": vel_world[:, :2],
+            "s": step_state["frenet"]["s"],
+            "ey": step_state["boundary"]["ey"],
+            "L": step_state["frenet"]["L"],
+        }
+
+    def _ego_opponent_block(self, ego_step_state: dict[str, Any]) -> torch.Tensor | None:
+        """Opponent-relative observation block from the ego's frame (or None)."""
+        if self.opponent is None or not bool(
+            self.obs_cfg.get("enable_opponent_obs", False)
+        ):
+            return None
+        opp_ss = self._opponent_step_state(self.opp_base_pos)
+        return obs_opponent(
+            self._agent_state(
+                self.base_pos, self.base_quat, self.base_vel_world, ego_step_state
+            ),
+            self._agent_state(
+                self.opp_base_pos, self.opp_base_quat, self.opp_vel_world, opp_ss
+            ),
+            self.obs_cfg,
+        )
+
+    def _build_opponent_obs(self, opp_step_state: dict[str, Any]) -> torch.Tensor:
+        """Opponent's own egocentric observation (only for a PolicyOpponent)."""
+        opp = self.opponent  # type: Any
+        opp_body_vel = gu.inv_transform_by_quat(self.opp_vel_world, self.opp_base_quat)
+        opp_ang_vel = gu.inv_transform_by_quat(opp.get_ang(), self.opp_base_quat)
+        opp_acc = torch.zeros_like(opp_body_vel)
+
+        opp_ss = dict(opp_step_state)
+        opp_ss["wheel_state"] = dict(
+            motion_link_vel=opp.get_links_vel(
+                links_idx_local=self.slip_motion_link_idx, ref="link_com"
+            ),
+            frame_quat=opp.get_links_quat(links_idx_local=self.slip_frame_link_idx),
+            dof_vel=opp.get_dofs_velocity(dofs_idx_local=self.wheel_dofs),
+        )
+        wheel_radius = float(self.env_cfg.get("wheel_radius", 0.05))
+        slip_eps = float(self.reward_cfg.get("slip_eps", 0.1))
+        opp_ss["tyre_slip"] = compute_tyre_slip(
+            opp_ss["wheel_state"], wheel_radius=wheel_radius, slip_eps=slip_eps
+        )
+
+        ego_ss = self._get_step_state()
+        opp_block = obs_opponent(
+            self._agent_state(
+                self.opp_base_pos, self.opp_base_quat, self.opp_vel_world, opp_ss
+            ),
+            self._agent_state(
+                self.base_pos, self.base_quat, self.base_vel_world, ego_ss
+            ),
+            self.obs_cfg,
+        )
+        return build_observation(
+            num_obs=self.num_obs,
+            num_envs=self.num_envs,
+            base_lin_vel=opp_body_vel,
+            base_ang_vel=opp_ang_vel,
+            base_lin_acc=opp_acc,
+            last_actions=self.opp_last_actions,
+            base_pos=self.opp_base_pos,
+            base_quat=self.opp_base_quat,
+            obs_cfg=self.obs_cfg,
+            step_state=opp_ss,
+            device=self.device,
+            opponent_block=opp_block,
+        )
+
+    def _apply_opponent_actions(self) -> None:
+        """Query the opponent controller and actuate the opponent entity."""
+        if self.opponent is None or self.opponent_ctrl is None:
+            return
+        opp_ss = self._opponent_step_state(self.opp_base_pos)
+        opp_obs = None
+        if self.opponent_ctrl.requires_observation:
+            opp_obs = self._build_opponent_obs(opp_ss)
+        ctx = OpponentContext(
+            step_state=opp_ss,
+            opp_pos=self.opp_base_pos,
+            opp_vel=self.opp_vel_world,
+            opp_quat=self.opp_base_quat,
+            opp_last_actions=self.opp_last_actions,
+            env_cfg=self.env_cfg,
+            device=self.device,
+            ego_pos=self.base_pos,
+            ego_vel=self.base_vel_world,
+            ego_quat=self.base_quat,
+            opp_obs=opp_obs,
+        )
+        opp_actions = self.opponent_ctrl.act(ctx)
+        opp_actions = torch.clip(
+            opp_actions,
+            -self.env_cfg["clip_actions"],
+            self.env_cfg["clip_actions"],
+        )
+        opp_body_vel = gu.inv_transform_by_quat(
+            self.opp_vel_world, self.opp_base_quat
+        )
+        self.opp_steer_state = self._actuate_entity(
+            self.opponent, opp_actions, self.opp_steer_state, opp_body_vel
+        )
+        self.opp_last_actions = opp_actions
 
     def _dissipative_enabled(self) -> bool:
         return bool(self.env_cfg.get("enable_aero_drag", False)) or (
@@ -793,6 +996,7 @@ class F1tenthEnv:
         )
 
         self._apply_actions(exec_actions)
+        self._apply_opponent_actions()
         drag_force = self._compute_dissipative_force()
         for _ in range(n_steps):
             if drag_force is not None:

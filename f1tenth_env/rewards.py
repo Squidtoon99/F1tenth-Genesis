@@ -100,6 +100,79 @@ def sync_progress_state_for_resets(
     reward_state["last_progress_ds"][reset_mask] = 0.0
 
 
+def ensure_opp_progress_delta(
+    step_state: dict[str, Any],
+    episode_steps_buf: torch.Tensor,
+    reward_cfg: dict[str, Any],
+    reward_state: dict[str, Any],
+) -> dict[str, Any]:
+    """Per-step opponent arc-length delta, mirroring ``ensure_progress_delta``.
+
+    Tracks the opponent's previous ``s`` (and step counter) so the delta wraps the
+    start/finish line, is clamped, and is zeroed on reset - exactly like the ego
+    progress delta. Requires ``step_state['opp_s']`` to be present.
+    """
+    if "opp_progress_ds" in step_state:
+        return step_state
+
+    opp_s = step_state["opp_s"].reshape(-1)
+    length = step_state["frenet"]["L"]
+    step_now = episode_steps_buf.to(dtype=gs.tc_float)
+    batch = opp_s.shape[0]
+
+    prev_step_counter = reward_state.get("prev_opp_step_counter")
+    prev_s = reward_state.get("prev_opp_s")
+    if prev_step_counter is None or prev_step_counter.numel() != batch:
+        prev_step_counter = step_now.detach().clone()
+    if prev_s is None or prev_s.numel() != batch:
+        prev_s = opp_s.detach().clone()
+
+    reset_mask = step_now < prev_step_counter.reshape(-1)
+
+    ds = opp_s - prev_s.reshape(-1)
+    half_l = 0.5 * length
+    ds = torch.where(ds > half_l, ds - length, ds)
+    ds = torch.where(ds < -half_l, ds + length, ds)
+
+    max_step_frac = float(reward_cfg.get("progress_max_step_frac", 0.05))
+    max_ds = max_step_frac * length
+    ds = ds.clamp(min=-max_ds, max=max_ds)
+    ds = torch.where(reset_mask, torch.zeros_like(ds), ds)
+
+    reward_state["prev_opp_s"] = opp_s.detach().clone()
+    reward_state["prev_opp_step_counter"] = step_now.detach().clone()
+
+    step_state["opp_progress_ds"] = ds
+    return step_state
+
+
+def reward_passing(
+    step_state: dict[str, Any],
+    reward_cfg: dict[str, Any],
+    reward_state: dict[str, Any],
+    episode_steps_buf: torch.Tensor,
+) -> torch.Tensor:
+    """Reward gaining track position on the opponent: ``k * (ego_ds - opp_ds)``.
+
+    Built from the per-step arc-length deltas of both cars, so it is naturally
+    zeroed on reset (both deltas are) and never spikes at the start/finish line.
+    Returns zeros when no opponent is present.
+    """
+    if "opp_s" not in step_state:
+        return torch.zeros_like(step_state["progress_ds"])
+
+    ensure_opp_progress_delta(
+        step_state=step_state,
+        episode_steps_buf=episode_steps_buf,
+        reward_cfg=reward_cfg,
+        reward_state=reward_state,
+    )
+    ego_ds = step_state["progress_ds"]
+    opp_ds = step_state["opp_progress_ds"]
+    k = float(reward_cfg.get("passing_k", 5.0))
+    return k * (ego_ds - opp_ds)
+
+
 def reward_progress(
     step_state: dict[str, Any], reward_cfg: dict[str, Any]
 ) -> torch.Tensor:
@@ -222,6 +295,15 @@ def compute_rewards(
     tyre_slip_penalty = reward_tyre_slip_penalty(step_state, reward_cfg)
     smoothness_penalty = reward_smoothness_penalty(step_state, reward_cfg)
 
+    # 1v1 passing reward (gated: only when a 'passing' scale is configured). Off
+    # for 1v0, keeping the solo reward byte-for-byte unchanged.
+    scales = reward_cfg["reward_scales"]
+    passing_enabled = "passing" in scales
+    if passing_enabled:
+        passing = reward_passing(
+            step_state, reward_cfg, reward_state, episode_steps_buf
+        )
+
     # GT Sophy masks course progress whenever the agent is off course (anti
     # corner-cutting). Derive the mask directly from the boundary state: the
     # off-course penalty is ~v^2 and goes to zero at low speed, so it can no longer
@@ -231,11 +313,12 @@ def compute_rewards(
     )
     progress = torch.where(off_track, torch.zeros_like(progress), progress)
 
-    scales = reward_cfg["reward_scales"]
     progress *= scales["progress"]
     oob_penalty *= scales["oob_penalty"]
     tyre_slip_penalty *= scales["tyre_slip_penalty"]
     smoothness_penalty *= scales.get("smoothness", 0.0)
+    if passing_enabled:
+        passing *= scales["passing"]
 
     # Single global knob to shrink overall reward magnitude (keeps the relative
     # balance between terms intact) so returns / critic targets stay O(1).
@@ -244,6 +327,8 @@ def compute_rewards(
     oob_penalty *= global_scale
     tyre_slip_penalty *= global_scale
     smoothness_penalty *= global_scale
+    if passing_enabled:
+        passing *= global_scale
 
     last_terms: dict[str, torch.Tensor] = {
         "progress": progress.clone(),
@@ -253,6 +338,9 @@ def compute_rewards(
     }
 
     reward_buf += progress + oob_penalty + tyre_slip_penalty + smoothness_penalty
+    if passing_enabled:
+        reward_buf += passing
+        last_terms["passing"] = passing.clone()
 
     reward_state["last_reward_terms"] = last_terms
     return reward_buf, step_state

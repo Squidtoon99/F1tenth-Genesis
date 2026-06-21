@@ -52,6 +52,11 @@ DEFAULT_CONFIG = {
         "norm_clip": 10.0,
         "norm_eps": 1e-8,
         "contact_margin_m": 0.08,
+        # 1v1: when enabled, an opponent-relative block of size opponent_obs_dim is
+        # appended to the observation (num_obs becomes 380 + opponent_obs_dim). Off
+        # by default so the solo (1v0) observation stays 380-dim and unchanged.
+        "enable_opponent_obs": False,
+        "opponent_obs_dim": 7,
         "future_track_num_points": 60,
         "future_track_horizon_s": 6.0,
         # Floor for the speed-scaled lookahead so the policy still sees the upcoming
@@ -127,6 +132,21 @@ DEFAULT_CONFIG = {
         "drive_torque_sign": 1.0,
         # Competition sim track (dfr_f1tenth_gym dev-humble maps/IV_2026_SIM).
         "track": "IV_2026_SIM",
+        # --- 1v1 opponent (hard 1v1: exactly one opponent) ---
+        # opponent_strategy: None (1v0 / solo), "scripted" (centerline follower),
+        # or "policy" (frozen-policy self-play opponent; deferred training loop).
+        "opponent_strategy": None,
+        # Scripted opponent: centerline follower kept below ego pace so an overtake
+        # is feasible. target speed is in m/s; spawn gap is meters ahead of the ego.
+        "opponent_target_speed": 3.0,
+        "opponent_spawn_gap_m": 7.0,
+        "opponent_kp_ey": 1.0,
+        "opponent_kh_heading": 1.0,
+        # Collision termination: end the episode when the cars are within
+        # collision_dist_m. No shaped collision penalty (forfeited progress is the
+        # avoidance incentive).
+        "term_on_collision": True,
+        "collision_dist_m": 0.4,
     },
     "reward": {
         # GT Sophy-aligned reward: course progress (primary), off-course penalty
@@ -142,6 +162,11 @@ DEFAULT_CONFIG = {
         # penalty at racing speed (~6 m/s) is comparable to the previous shaping
         # while escalating quadratically with speed for fast excursions.
         "oob_k": 0.15,
+        # 1v1 passing reward gain: per-step reward = passing_k * (ego_ds - opp_ds),
+        # i.e. track position gained on the opponent. Only active when a "passing"
+        # entry is added to reward_scales (the trainer does this for 1v1), so 1v0 is
+        # unaffected.
+        "passing_k": 5.0,
         # Global downscale applied to the summed reward to keep per-step total and
         # value targets O(1) (progress alone was ~9/step before). Preserves the
         # relative balance between the individual reward terms.
