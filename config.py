@@ -92,11 +92,9 @@ DEFAULT_CONFIG = {
         "clip_actions": 1.0,
         "simulate_action_latency": True,
         "term_oob_margin_m": 0.15,
-        # Allow ~1.0s (10 steps at 10 Hz) off-track before terminating. The
-        # aggressive value (2) was a NaN band-aid; physics is now confirmed stable
-        # to ~15 m/s, so we give the policy room to recover from a fast excursion
-        # and learn cornering instead of being forced to crawl.
-        "term_oob_max_consecutive": 10,
+        # Strict OOB: chicane cuts end the episode quickly so skipping S-bends
+        # cannot amortize off-track time against on-track progress.
+        "term_oob_max_consecutive": 2,
         "term_speed_threshold": 0.2,
         "term_not_moving_time_s": 2.0,
         "term_not_moving_min_ds": 1e-3,
@@ -156,12 +154,13 @@ DEFAULT_CONFIG = {
         "progress_k_fwd": 5.0,
         "progress_k_back": 5.0,
         "progress_max_lateral_m": 1.0,
-        "oob_margin_m": 0.5,
+        "oob_margin_m": 0.2,
         # GT Sophy off-course penalty R_soc = -(time off course) * speed^2. The
         # per-step time off course is constant and folds into oob_k; tuned so the
         # penalty at racing speed (~6 m/s) is comparable to the previous shaping
         # while escalating quadratically with speed for fast excursions.
-        "oob_k": 0.15,
+        "oob_k": 0.3,
+        "lateral_k": 0.5,
         # 1v1 passing reward gain: per-step reward = passing_k * (ego_ds - opp_ds),
         # i.e. track position gained on the opponent. Only active when a "passing"
         # entry is added to reward_scales (the trainer does this for 1v1), so 1v0 is
@@ -173,6 +172,7 @@ DEFAULT_CONFIG = {
         "global_reward_scale": 0.2,
         "reward_scales": {
             "progress": 5.0,
+            "lateral": 1.0,
             "oob_penalty": 0.6,
             "tyre_slip_penalty": 0.05,
             # Mild jerk penalty to curb bang-bang throttle/steer.

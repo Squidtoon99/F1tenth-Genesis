@@ -22,6 +22,7 @@ def init_reward_state(
         "prev_s": None,
         "prev_step_counter": None,
         "last_progress_ds": torch.zeros((num_envs,), dtype=gs.tc_float, device=device),
+        "prev_off_track": None,
     }
 
 
@@ -98,6 +99,10 @@ def sync_progress_state_for_resets(
         prev_step_counter[reset_mask] = step_now[reset_mask].detach()
 
     reward_state["last_progress_ds"][reset_mask] = 0.0
+
+    prev_off = reward_state.get("prev_off_track")
+    if prev_off is not None and prev_off.numel() == s.numel():
+        prev_off[reset_mask] = False
 
 
 def ensure_opp_progress_delta(
@@ -197,6 +202,15 @@ def reward_progress(
     return reward
 
 
+def reward_lateral(
+    step_state: dict[str, Any], reward_cfg: dict[str, Any]
+) -> torch.Tensor:
+    """Penalize lateral offset from centerline (track-aligned ey)."""
+    ey = step_state["boundary"]["ey"].reshape(-1)
+    k = float(reward_cfg.get("lateral_k", 0.5))
+    return -k * ey * ey
+
+
 def reward_oob_penalty(
     step_state: dict[str, Any], reward_cfg: dict[str, Any]
 ) -> torch.Tensor:
@@ -291,6 +305,7 @@ def compute_rewards(
     reward_buf = torch.zeros((num_envs,), dtype=gs.tc_float, device=device)
 
     progress = reward_progress(step_state, reward_cfg)
+    lateral = reward_lateral(step_state, reward_cfg)
     oob_penalty = reward_oob_penalty(step_state, reward_cfg)
     tyre_slip_penalty = reward_tyre_slip_penalty(step_state, reward_cfg)
     smoothness_penalty = reward_smoothness_penalty(step_state, reward_cfg)
@@ -311,9 +326,16 @@ def compute_rewards(
     off_track, _ = compute_oob_from_boundary_state(
         step_state["boundary"], margin_m=float(reward_cfg.get("oob_margin_m", 0.5))
     )
-    progress = torch.where(off_track, torch.zeros_like(progress), progress)
+    prev_off = reward_state.get("prev_off_track")
+    if prev_off is None or prev_off.numel() != off_track.numel():
+        prev_off = torch.zeros_like(off_track, dtype=torch.bool)
+    on_track = ~off_track
+    rejoin = on_track & prev_off
+    progress = torch.where(off_track | rejoin, torch.zeros_like(progress), progress)
+    reward_state["prev_off_track"] = off_track.detach().clone()
 
     progress *= scales["progress"]
+    lateral *= scales.get("lateral", 0.0)
     oob_penalty *= scales["oob_penalty"]
     tyre_slip_penalty *= scales["tyre_slip_penalty"]
     smoothness_penalty *= scales.get("smoothness", 0.0)
@@ -324,6 +346,7 @@ def compute_rewards(
     # balance between terms intact) so returns / critic targets stay O(1).
     global_scale = float(reward_cfg.get("global_reward_scale", 1.0))
     progress *= global_scale
+    lateral *= global_scale
     oob_penalty *= global_scale
     tyre_slip_penalty *= global_scale
     smoothness_penalty *= global_scale
@@ -332,12 +355,13 @@ def compute_rewards(
 
     last_terms: dict[str, torch.Tensor] = {
         "progress": progress.clone(),
+        "lateral": lateral.clone(),
         "oob_penalty": oob_penalty.clone(),
         "tyre_slip_penalty": tyre_slip_penalty.clone(),
         "smoothness": smoothness_penalty.clone(),
     }
 
-    reward_buf += progress + oob_penalty + tyre_slip_penalty + smoothness_penalty
+    reward_buf += progress + lateral + oob_penalty + tyre_slip_penalty + smoothness_penalty
     if passing_enabled:
         reward_buf += passing
         last_terms["passing"] = passing.clone()
