@@ -123,7 +123,8 @@ def test_contact_flag_inside_and_near_boundary(real_modules, obs_cfg):
 def test_future_points_straight_layout(real_modules, obs_cfg):
     """Straight track, yaw 0, forward speed: center points march +x, left/right at
     +/- half width; verifies ordering [center, left, right] and ego transform."""
-    cl, wl, wr = make_straight_track(length=60.0, n=240)
+    w_left, w_right = 1.2, 0.9
+    cl, wl, wr = make_straight_track(length=60.0, n=240, w_left=w_left, w_right=w_right)
     ts = build_track_state(real_modules.utils, cl, wl, wr)
     base_pos, ss = _step_state(real_modules, ts, [10.0, 0.0])
     quat = yaw_quat_wxyz(0.0)
@@ -133,7 +134,6 @@ def test_future_points_straight_layout(real_modules, obs_cfg):
         base_pos, quat, vel, obs_cfg, DEVICE, ss
     )
     n = int(obs_cfg["future_track_num_points"])
-    half_w = 0.5 * float(obs_cfg["future_track_width"])
     flat = out[0]
     center = flat[: 2 * n].view(n, 2)
     left = flat[2 * n : 4 * n].view(n, 2)
@@ -146,16 +146,17 @@ def test_future_points_straight_layout(real_modules, obs_cfg):
     assert torch.allclose(center[:, 1], torch.zeros(n), atol=1e-2)
     assert center[0, 0].item() == pytest.approx(spacing, abs=2e-2)
     assert center[-1, 0].item() == pytest.approx(n * spacing, abs=5e-2)
-    # left/right offset by +/- half width in ego y
-    assert torch.allclose(left[:, 1], torch.full((n,), half_w), atol=2e-2)
-    assert torch.allclose(right[:, 1], torch.full((n,), -half_w), atol=2e-2)
+    # left/right offset by per-vertex CSV half-widths in ego y
+    assert torch.allclose(left[:, 1], torch.full((n,), w_left), atol=2e-2)
+    assert torch.allclose(right[:, 1], torch.full((n,), -w_right), atol=2e-2)
 
 
 def test_future_points_speed_zero_uses_min_lookahead(real_modules, obs_cfg):
     """FIX: at speed 0 the lookahead is floored at future_track_min_lookahead_m, so
     the policy still gets a track preview spanning that distance instead of all 60
     samples collapsing onto the current point."""
-    cl, wl, wr = make_straight_track(length=60.0, n=240)
+    w_left, w_right = 1.2, 0.9
+    cl, wl, wr = make_straight_track(length=60.0, n=240, w_left=w_left, w_right=w_right)
     ts = build_track_state(real_modules.utils, cl, wl, wr)
     base_pos, ss = _step_state(real_modules, ts, [10.0, 0.0])
     quat = yaw_quat_wxyz(0.0)

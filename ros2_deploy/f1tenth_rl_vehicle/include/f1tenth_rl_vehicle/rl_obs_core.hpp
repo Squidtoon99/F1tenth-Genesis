@@ -23,7 +23,7 @@ struct ObsConfig
   int num_obs = 380;
   int future_track_num_points = 60;
   double future_track_horizon_s = 6.0;
-  double future_track_width = 2.2;
+  double future_track_width = 2.2;  // deprecated: corridor uses per-vertex CSV widths
   double contact_margin_m = 0.08;
   double clip_obs = 50.0;
   double lin_vel_scale = 1.0;

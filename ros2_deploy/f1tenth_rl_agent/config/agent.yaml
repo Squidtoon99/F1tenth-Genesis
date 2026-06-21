@@ -11,7 +11,7 @@ observation_builder:
     contact_margin_m: 0.08
     future_track_num_points: 60
     future_track_horizon_s: 6.0
-    future_track_width: 2.2
+    future_track_width: 2.2  # deprecated: corridor edges use CSV w_tr_*_m
     # If the simulator publishes odom twist in the world frame instead of body frame,
     # set this True to rotate linear velocity into the body frame before building obs.
     twist_in_world_frame: false

@@ -10,7 +10,7 @@ observation_builder:
     contact_margin_m: 0.08
     future_track_num_points: 60
     future_track_horizon_s: 6.0
-    future_track_width: 2.2
+    future_track_width: 2.2  # deprecated: corridor edges use CSV w_tr_*_m
     twist_in_world_frame: false
     publish_debug_markers: true
 

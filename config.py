@@ -59,6 +59,7 @@ DEFAULT_CONFIG = {
         # onto the current point). Only affects speeds below
         # future_track_min_lookahead_m / future_track_horizon_s.
         "future_track_min_lookahead_m": 5.0,
+        # Deprecated: corridor edges use per-vertex w_tr_left_m / w_tr_right_m.
         "future_track_width": 2.2,
     },
     "env": {
