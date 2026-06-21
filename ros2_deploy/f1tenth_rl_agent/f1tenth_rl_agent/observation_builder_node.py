@@ -1,4 +1,4 @@
-"""observation_builder_node: build the 380-dim policy observation from odometry.
+"""observation_builder_node: build the policy observation from odometry (380 or 387).
 
 Subscribes to ground-truth odometry and the latched track topics, reconstructs the
 exact training observation via obs_core, and publishes it at the control rate.
@@ -41,6 +41,8 @@ class ObservationBuilderNode(Node):
         self.declare_parameter("future_track_width", ifc.FUTURE_TRACK_WIDTH)
         self.declare_parameter("twist_in_world_frame", False)
         self.declare_parameter("publish_debug_markers", True)
+        self.declare_parameter("enable_opponent_obs", False)
+        self.declare_parameter("opponent_odom_topic", ifc.TOPIC_OPP_ODOM)
 
         gp = self.get_parameter
         self.control_hz = gp("control_hz").get_parameter_value().double_value
@@ -50,7 +52,10 @@ class ObservationBuilderNode(Node):
         self.publish_markers = (
             gp("publish_debug_markers").get_parameter_value().bool_value
         )
-        self.obs_cfg = ifc.default_obs_cfg()
+        self.enable_opponent = (
+            gp("enable_opponent_obs").get_parameter_value().bool_value
+        )
+        self.obs_cfg = ifc.default_obs_cfg(self.enable_opponent)
         self.obs_cfg["contact_margin_m"] = (
             gp("contact_margin_m").get_parameter_value().double_value
         )
@@ -70,6 +75,7 @@ class ObservationBuilderNode(Node):
         self._w_right = None
 
         self._last_odom: Odometry | None = None
+        self._last_opp_odom: Odometry | None = None
         self._prev_body_vel: np.ndarray | None = None
         self._prev_vel_stamp: float | None = None
         self._body_accel = np.zeros(2, dtype=np.float32)
@@ -80,7 +86,10 @@ class ObservationBuilderNode(Node):
         self.create_subscription(
             Float32MultiArray, ifc.TOPIC_TRACK_WIDTHS, self._on_widths, latched
         )
+        opp_topic = gp("opponent_odom_topic").get_parameter_value().string_value
         self.create_subscription(Odometry, ifc.TOPIC_ODOM, self._on_odom, 10)
+        if self.enable_opponent:
+            self.create_subscription(Odometry, opp_topic, self._on_opp_odom, 10)
         self.create_subscription(Float32MultiArray, ifc.TOPIC_ACTION, self._on_action, 10)
 
         self.obs_pub = self.create_publisher(Float32MultiArray, ifc.TOPIC_OBSERVATION, 10)
@@ -125,7 +134,8 @@ class ObservationBuilderNode(Node):
             device=torch.device("cpu"),
         )
         self.get_logger().info(
-            f"ObservationBuilder initialized with {len(self._centerline)} points"
+            f"ObservationBuilder initialized with {len(self._centerline)} points; "
+            f"num_obs={self.obs_cfg['num_obs']}"
         )
 
     def _on_action(self, msg: Float32MultiArray):
@@ -134,6 +144,9 @@ class ObservationBuilderNode(Node):
 
     def _on_odom(self, msg: Odometry):
         self._last_odom = msg
+
+    def _on_opp_odom(self, msg: Odometry):
+        self._last_opp_odom = msg
 
     # --- main loop -------------------------------------------------------------
     @staticmethod
@@ -185,6 +198,39 @@ class ObservationBuilderNode(Node):
         last_actions = torch.tensor([self._last_action], dtype=torch.float32)
         base_pos = torch.tensor([[pos.x, pos.y, pos.z]], dtype=torch.float32)
 
+        opponent_block = None
+        if self.enable_opponent:
+            if self._last_opp_odom is not None:
+                opp = self._last_opp_odom
+                opp_pos = opp.pose.pose.position
+                oq = opp.pose.pose.orientation
+                opp_yaw = float(
+                    math.atan2(
+                        2.0 * (oq.w * oq.z + oq.x * oq.y),
+                        1.0 - 2.0 * (oq.y * oq.y + oq.z * oq.z),
+                    )
+                )
+                ego_vel_world = torch.tensor(
+                    [[msg.twist.twist.linear.x, msg.twist.twist.linear.y]],
+                    dtype=torch.float32,
+                )
+                opp_vel_world = torch.tensor(
+                    [[opp.twist.twist.linear.x, opp.twist.twist.linear.y]],
+                    dtype=torch.float32,
+                )
+                ego_yaw_t = torch.tensor([yaw], dtype=torch.float32)
+                opp_pos_t = torch.tensor([[opp_pos.x, opp_pos.y, opp_pos.z]], dtype=torch.float32)
+                opponent_block = self.builder.build_opponent_block(
+                    ego_pos=base_pos,
+                    ego_yaw=ego_yaw_t,
+                    ego_vel_world=ego_vel_world,
+                    opp_pos=opp_pos_t,
+                    opp_vel_world=opp_vel_world,
+                    present=torch.tensor([1.0], dtype=torch.float32),
+                )
+            else:
+                opponent_block = base_lin_vel.new_zeros((1, ifc.OPPONENT_OBS_DIM))
+
         obs = self.builder.build(
             base_lin_vel=base_lin_vel,
             base_ang_vel=base_ang_vel,
@@ -192,6 +238,7 @@ class ObservationBuilderNode(Node):
             last_actions=last_actions,
             base_pos=base_pos,
             base_quat_wxyz=quat_wxyz,
+            opponent_block=opponent_block,
         )
         obs_np = obs.squeeze(0).numpy().astype(np.float32)
 

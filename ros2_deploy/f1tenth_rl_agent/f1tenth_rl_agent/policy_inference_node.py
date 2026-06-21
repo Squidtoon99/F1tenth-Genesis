@@ -35,6 +35,7 @@ class PolicyInferenceNode(Node):
         self.declare_parameter("demo_throttle_floor", 0.0)
         self.declare_parameter("norm_clip", ifc.OBS_NORM_CLIP)
         self.declare_parameter("norm_eps", ifc.OBS_NORM_EPS)
+        self.declare_parameter("enable_opponent_obs", False)
 
         gp = self.get_parameter
         checkpoint_path = gp("checkpoint_path").get_parameter_value().string_value
@@ -46,6 +47,9 @@ class PolicyInferenceNode(Node):
         )
         self.norm_clip = gp("norm_clip").get_parameter_value().double_value
         self.norm_eps = gp("norm_eps").get_parameter_value().double_value
+        self.num_obs = ifc.expected_num_obs(
+            gp("enable_opponent_obs").get_parameter_value().bool_value
+        )
 
         self.device = torch.device(device_str)
         self.actor, self._checkpoint_loaded = self._load_actor(
@@ -65,7 +69,7 @@ class PolicyInferenceNode(Node):
             try:
                 actor = load_actor(
                     checkpoint_path=checkpoint_path,
-                    obs_dim=ifc.NUM_OBS,
+                    obs_dim=self.num_obs,
                     act_dim=ifc.NUM_ACTIONS,
                     hidden_sizes=ifc.HIDDEN_LAYERS,
                     act_limit=ifc.ACT_LIMIT,
@@ -84,7 +88,7 @@ class PolicyInferenceNode(Node):
                 "No checkpoint_path provided; using random-init actor (plumbing only)."
             )
         actor = SquashedGaussianMLPActor(
-            obs_dim=ifc.NUM_OBS,
+            obs_dim=self.num_obs,
             act_dim=ifc.NUM_ACTIONS,
             hidden_sizes=ifc.HIDDEN_LAYERS,
             activation=nn.ReLU,
@@ -122,9 +126,9 @@ class PolicyInferenceNode(Node):
         return normalizer
 
     def _on_obs(self, msg: Float32MultiArray):
-        if len(msg.data) != ifc.NUM_OBS:
+        if len(msg.data) != self.num_obs:
             self.get_logger().warn(
-                f"Observation length {len(msg.data)} != {ifc.NUM_OBS}; skipping"
+                f"Observation length {len(msg.data)} != {self.num_obs}; skipping"
             )
             return
         obs = torch.tensor([list(msg.data)], dtype=torch.float32, device=self.device)

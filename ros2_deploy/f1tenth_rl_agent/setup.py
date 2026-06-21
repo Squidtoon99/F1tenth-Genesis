@@ -30,6 +30,7 @@ setup(
             "policy_inference = f1tenth_rl_agent.policy_inference_node:main",
             "drive_command = f1tenth_rl_agent.drive_command_node:main",
             "evaluation = f1tenth_rl_agent.evaluation_node:main",
+            "scripted_opponent = f1tenth_rl_agent.scripted_opponent_node:main",
         ],
     },
 )

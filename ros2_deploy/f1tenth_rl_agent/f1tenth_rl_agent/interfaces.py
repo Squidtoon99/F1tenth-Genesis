@@ -8,6 +8,9 @@ from __future__ import annotations
 
 # --- Simulator topics (f1tenth_gym_ros) ---------------------------------------
 TOPIC_ODOM = "/ego_racecar/odom"
+TOPIC_OPP_ODOM = "/ego_racecar/opp_odom"
+TOPIC_OPP_RACE_ODOM = "/opp_racecar/odom"
+TOPIC_OPP_DRIVE = "/opp_drive"
 TOPIC_MAP = "/map"
 TOPIC_DRIVE = "/drive"
 TOPIC_INITIALPOSE = "/initialpose"
@@ -26,7 +29,10 @@ FRAME_MAP = "map"
 FRAME_BASE_LINK = "ego_racecar/base_link"
 
 # --- Dimensions ---------------------------------------------------------------
-NUM_OBS = 380
+NUM_OBS_BASE = 380
+NUM_OBS = NUM_OBS_BASE
+OPPONENT_OBS_DIM = 7
+NUM_OBS_1V1 = NUM_OBS_BASE + OPPONENT_OBS_DIM
 NUM_ACTIONS = 2
 NUM_TYRE_SLIP = 8  # [slip_ratio x4, slip_angle x4] per training env
 
@@ -41,6 +47,7 @@ OBS_CENTERLINE_DISTANCE = (10, 11)
 OBS_CONTACT_FLAG = (11, 12)
 OBS_FUTURE_POINTS = (12, 372)
 OBS_TYRE_SLIP = (372, 380)
+OBS_OPPONENT = (380, 387)
 
 # Match DEFAULT_CONFIG["obs"]["obs_scales"] and clip_obs in config.py. The trainer
 # now standardizes observations with a running ObsNormalizer, so the env-side fixed
@@ -80,10 +87,21 @@ ACT_LIMIT = 1.0
 CONTROL_HZ = 10.0
 
 
-def default_obs_cfg() -> dict:
+def expected_num_obs(enable_opponent_obs: bool) -> int:
+    """Policy observation dimension (380 solo, 387 with opponent block)."""
+    if enable_opponent_obs:
+        return NUM_OBS_1V1
+    return NUM_OBS_BASE
+
+
+def default_obs_cfg(enable_opponent_obs: bool = False) -> dict:
     """Return the obs_cfg dict expected by obs_core.build_observation."""
+    num_obs = expected_num_obs(enable_opponent_obs)
     return {
-        "num_obs": NUM_OBS,
+        "num_obs": num_obs,
+        "base_num_obs": NUM_OBS_BASE,
+        "enable_opponent_obs": enable_opponent_obs,
+        "opponent_obs_dim": OPPONENT_OBS_DIM,
         "obs_scales": {
             "lin_vel": OBS_LIN_VEL_SCALE,
             "ang_vel": OBS_ANG_VEL_SCALE,
