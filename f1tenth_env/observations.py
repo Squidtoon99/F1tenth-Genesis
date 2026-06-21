@@ -78,7 +78,7 @@ def obs_future_track_points(
     batch = robot_pos.shape[0]
     samples = int(obs_cfg.get("future_track_num_points", 60))
     horizon_s = float(obs_cfg.get("future_track_horizon_s", 6.0))
-    track_width = float(obs_cfg.get("future_track_width", 2.0))
+    # future_track_width is deprecated: corridor edges use per-vertex CSV widths.
 
     frenet = step_state["frenet"]
     s0 = frenet["s"]
@@ -107,9 +107,17 @@ def obs_future_track_points(
     tangents = (p1 - p0) / seg_len_sel.unsqueeze(-1)
     normals = torch.stack([-tangents[:, 1], tangents[:, 0]], dim=-1)
 
-    half_w = 0.5 * track_width
-    left_pts = center_pts + half_w * normals
-    right_pts = center_pts - half_w * normals
+    w_tr_left = obs_track["w_tr_left"]
+    w_tr_right = obs_track["w_tr_right"]
+    alpha_t = alpha.squeeze(-1)
+    w_l = w_tr_left[seg_idx_flat] + alpha_t * (
+        w_tr_left[seg_idx_flat + 1] - w_tr_left[seg_idx_flat]
+    )
+    w_r = w_tr_right[seg_idx_flat] + alpha_t * (
+        w_tr_right[seg_idx_flat + 1] - w_tr_right[seg_idx_flat]
+    )
+    left_pts = center_pts + w_l.unsqueeze(-1) * normals
+    right_pts = center_pts - w_r.unsqueeze(-1) * normals
 
     center_pts = center_pts.view(batch, samples, 2)
     left_pts = left_pts.view(batch, samples, 2)

@@ -15,12 +15,12 @@ import torch
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile
 
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Float32MultiArray
 
 from f1tenth_rl_agent import interfaces as ifc
-from f1tenth_rl_agent.eval_logic import EpisodeMonitor
+from f1tenth_rl_agent.eval_logic import EpisodeMonitor, opponent_pose_ahead
 from f1tenth_rl_agent.obs_core import ObservationBuilder
 from f1tenth_rl_agent.spawn_utils import MapAssets, load_map_assets, sample_reset_pose
 
@@ -49,6 +49,9 @@ class EvaluationNode(Node):
         self.declare_parameter("map_yaml", "")
         self.declare_parameter("spawn_max_dist", 1.0)
         self.declare_parameter("reset_grace_s", 2.0)
+        self.declare_parameter("enable_opponent_spawn", False)
+        self.declare_parameter("opponent_spawn_gap_m", 7.0)
+        self.declare_parameter("spawn_opponent_on_start", False)
 
         gp = self.get_parameter
         self.reset_x = gp("reset_x").get_parameter_value().double_value
@@ -65,6 +68,11 @@ class EvaluationNode(Node):
         self.reset_grace_s = gp("reset_grace_s").get_parameter_value().double_value
         self._reset_grace_until = 0.0
         self.spawn_max_dist = gp("spawn_max_dist").get_parameter_value().double_value
+        self.enable_opponent_spawn = gp("enable_opponent_spawn").get_parameter_value().bool_value
+        self.opponent_spawn_gap_m = gp("opponent_spawn_gap_m").get_parameter_value().double_value
+        self.spawn_opponent_on_start = gp("spawn_opponent_on_start").get_parameter_value().bool_value
+        self._opp_spawn_timer = None
+        self._pending_ego_spawn: tuple[float, float, float] | None = None
         self._map_assets: MapAssets | None = None
         map_yaml = gp("map_yaml").get_parameter_value().string_value.strip()
         if map_yaml:
@@ -99,6 +107,7 @@ class EvaluationNode(Node):
         self.reset_pub = self.create_publisher(
             PoseWithCovarianceStamped, ifc.TOPIC_INITIALPOSE, 1
         )
+        self.opp_reset_pub = self.create_publisher(PoseStamped, ifc.TOPIC_GOAL_POSE, 1)
 
     def _on_centerline(self, msg: Path):
         self._centerline = np.array(
@@ -127,8 +136,11 @@ class EvaluationNode(Node):
             device=torch.device("cpu"),
         )
         self.get_logger().info("evaluation monitor ready")
-        if self.random_spawn_on_start and not self._did_initial_spawn:
-            self._reset_car(reason="initial random spawn")
+        if not self._did_initial_spawn and (
+            self.random_spawn_on_start or self.spawn_opponent_on_start
+        ):
+            reason = "initial random spawn" if self.random_spawn_on_start else "initial 1v1 spawn"
+            self._reset_car(reason=reason)
             self._did_initial_spawn = True
             self.monitor.reset(self.get_clock().now().nanoseconds * 1e-9)
 
@@ -203,7 +215,39 @@ class EvaluationNode(Node):
         self.get_logger().info(
             f"Published /initialpose ({reason}) at ({x:.2f}, {y:.2f}, yaw={yaw:.2f})"
         )
+        if self.enable_opponent_spawn and self._centerline is not None:
+            self._pending_ego_spawn = (x, y, yaw)
+            if self._opp_spawn_timer is None:
+                self._opp_spawn_timer = self.create_timer(0.35, self._publish_opponent_spawn)
+            else:
+                self._opp_spawn_timer.reset()
 
+
+    def _publish_opponent_spawn(self):
+        if self._opp_spawn_timer is not None:
+            self._opp_spawn_timer.cancel()
+            self._opp_spawn_timer = None
+        if not self.enable_opponent_spawn or self._centerline is None:
+            return
+        if self._pending_ego_spawn is None:
+            return
+        x, y, _ = self._pending_ego_spawn
+        ox, oy, oyaw = opponent_pose_ahead(
+            self._centerline, x, y, gap_m=self.opponent_spawn_gap_m
+        )
+        opp = PoseStamped()
+        opp.header.frame_id = ifc.FRAME_MAP
+        opp.header.stamp = self.get_clock().now().to_msg()
+        opp.pose.position.x = ox
+        opp.pose.position.y = oy
+        opp.pose.orientation.z = math.sin(oyaw / 2)
+        opp.pose.orientation.w = math.cos(oyaw / 2)
+        self.opp_reset_pub.publish(opp)
+        gap = math.hypot(ox - x, oy - y)
+        self.get_logger().info(
+            f"Published /goal_pose (opponent) at ({ox:.2f}, {oy:.2f}, yaw={oyaw:.2f}), "
+            f"euclidean gap {gap:.2f} m"
+        )
 
 def main(args=None):
     rclpy.init(args=args)

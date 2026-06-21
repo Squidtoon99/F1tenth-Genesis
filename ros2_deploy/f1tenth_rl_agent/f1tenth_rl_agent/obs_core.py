@@ -208,6 +208,8 @@ def obs_contact_flag(
 
 def obs_future_track_points(
     centerline: np.ndarray,
+    w_tr_left: torch.Tensor,
+    w_tr_right: torch.Tensor,
     base_pos: torch.Tensor,
     base_quat_wxyz: torch.Tensor,
     base_lin_vel: torch.Tensor,
@@ -234,7 +236,7 @@ def obs_future_track_points(
     batch = robot_pos.shape[0]
     samples = int(obs_cfg.get("future_track_num_points", 60))
     horizon_s = float(obs_cfg.get("future_track_horizon_s", 6.0))
-    track_width = float(obs_cfg.get("future_track_width", 2.0))
+    # future_track_width is deprecated: corridor edges use per-vertex CSV widths.
 
     # Use the Frenet arc-length and closed-loop track length (matches training
     # observations.py), not the nearest open-polyline vertex / open total length.
@@ -264,9 +266,15 @@ def obs_future_track_points(
     tangents = (p1 - p0) / seg_len_sel.unsqueeze(-1)
     normals = torch.stack([-tangents[:, 1], tangents[:, 0]], dim=-1)
 
-    half_w = 0.5 * track_width
-    left_pts = center_pts + half_w * normals
-    right_pts = center_pts - half_w * normals
+    alpha_t = alpha.squeeze(-1)
+    w_l = w_tr_left[seg_idx_flat] + alpha_t * (
+        w_tr_left[seg_idx_flat + 1] - w_tr_left[seg_idx_flat]
+    )
+    w_r = w_tr_right[seg_idx_flat] + alpha_t * (
+        w_tr_right[seg_idx_flat + 1] - w_tr_right[seg_idx_flat]
+    )
+    left_pts = center_pts + w_l.unsqueeze(-1) * normals
+    right_pts = center_pts - w_r.unsqueeze(-1) * normals
 
     center_pts = center_pts.view(batch, samples, 2)
     left_pts = left_pts.view(batch, samples, 2)
@@ -291,6 +299,58 @@ def obs_future_track_points(
     return all_ego.reshape(batch, -1)
 
 
+
+
+def obs_opponent(
+    self_agent: dict[str, torch.Tensor],
+    other_agent: dict[str, torch.Tensor],
+    obs_cfg: dict[str, Any],
+    present: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Port of ``f1tenth_env.observations.obs_opponent`` (7-dim opponent block)."""
+    pos_s = self_agent["pos_xy"]
+    yaw_s = self_agent["yaw"].reshape(-1)
+    vel_s = self_agent["vel_xy"]
+
+    pos_o = other_agent["pos_xy"]
+    vel_o = other_agent["vel_xy"]
+    s_o = other_agent["s"].reshape(-1)
+    ey_o = other_agent["ey"].reshape(-1)
+
+    s_s = self_agent["s"].reshape(-1)
+    track_len = self_agent["L"]
+    if not torch.is_tensor(track_len):
+        track_len = torch.as_tensor(track_len, dtype=s_s.dtype, device=s_s.device)
+    track_len = track_len.reshape(-1).to(s_s.dtype)
+
+    cos_y = torch.cos(yaw_s)
+    sin_y = torch.sin(yaw_s)
+
+    d = pos_o - pos_s
+    rel_x = cos_y * d[:, 0] + sin_y * d[:, 1]
+    rel_y = -sin_y * d[:, 0] + cos_y * d[:, 1]
+
+    dv = vel_o - vel_s
+    rel_vx = cos_y * dv[:, 0] + sin_y * dv[:, 1]
+    rel_vy = -sin_y * dv[:, 0] + cos_y * dv[:, 1]
+
+    gap = s_o - s_s
+    half = 0.5 * track_len
+    gap = torch.where(gap > half, gap - track_len, gap)
+    gap = torch.where(gap < -half, gap + track_len, gap)
+    gap_norm = gap / half.clamp_min(1e-6)
+
+    if present is None:
+        present_f = torch.ones_like(rel_x)
+    else:
+        present_f = present.reshape(-1).to(rel_x.dtype)
+
+    block = torch.stack(
+        [rel_x, rel_y, rel_vx, rel_vy, gap_norm, ey_o, present_f], dim=-1
+    )
+    return block * present_f.unsqueeze(-1)
+
+
 class ObservationBuilder:
     """Stateful helper that owns the track geometry and builds observations.
 
@@ -311,6 +371,7 @@ class ObservationBuilder:
         self.centerline = np.asarray(centerline, dtype=np.float32)
         self.obs_cfg = obs_cfg or {}
         self.num_obs = int(self.obs_cfg.get("num_obs", 372))
+        self.base_num_obs = int(self.obs_cfg.get("base_num_obs", self.num_obs))
         self.w_tr_left = torch.as_tensor(w_tr_left, device=self.device, dtype=TC_FLOAT)
         self.w_tr_right = torch.as_tensor(w_tr_right, device=self.device, dtype=TC_FLOAT)
         self.geom = build_track_cache(
@@ -326,6 +387,7 @@ class ObservationBuilder:
         base_pos: torch.Tensor,
         base_quat_wxyz: torch.Tensor,
         tyre_slip: torch.Tensor | None = None,
+        opponent_block: torch.Tensor | None = None,
     ) -> torch.Tensor:
         frenet_state = frenet_projection(base_pos, self.geom, self.device)
         boundary_state = build_boundary_state(
@@ -338,7 +400,7 @@ class ObservationBuilder:
         lin_acc_scale = float(obs_scales.get("lin_acc", 1.0))
 
         batch = base_lin_vel.shape[0]
-        slip_dim = self.num_obs - 372
+        slip_dim = self.base_num_obs - 372
         if tyre_slip is None:
             tyre_slip = base_lin_vel.new_zeros((batch, slip_dim))
 
@@ -354,6 +416,8 @@ class ObservationBuilder:
                 obs_contact_flag(boundary_state, self.obs_cfg),
                 obs_future_track_points(
                     self.centerline,
+                    self.w_tr_left,
+                    self.w_tr_right,
                     base_pos,
                     base_quat_wxyz,
                     base_lin_vel,
@@ -366,6 +430,12 @@ class ObservationBuilder:
             dim=-1,
         )
 
+        if bool(self.obs_cfg.get("enable_opponent_obs", False)):
+            opp_dim = int(self.obs_cfg.get("opponent_obs_dim", 7))
+            if opponent_block is None:
+                opponent_block = base_lin_vel.new_zeros((batch, opp_dim))
+            obs = torch.cat((obs, opponent_block), dim=-1)
+
         clip_obs = float(self.obs_cfg.get("clip_obs", 0.0))
         if clip_obs > 0.0:
             obs = torch.clamp(obs, min=-clip_obs, max=clip_obs)
@@ -377,6 +447,39 @@ class ObservationBuilder:
                 f"got {actual_obs_dim}."
             )
         return obs
+
+
+    def build_opponent_block(
+        self,
+        ego_pos: torch.Tensor,
+        ego_yaw: torch.Tensor,
+        ego_vel_world: torch.Tensor,
+        opp_pos: torch.Tensor,
+        opp_vel_world: torch.Tensor,
+        present: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        ego_frenet = frenet_projection(ego_pos, self.geom, self.device)
+        ego_boundary = build_boundary_state(ego_frenet, self.w_tr_left, self.w_tr_right)
+        opp_frenet = frenet_projection(opp_pos, self.geom, self.device)
+        opp_boundary = build_boundary_state(opp_frenet, self.w_tr_left, self.w_tr_right)
+
+        track_len = ego_frenet["L"]
+        self_agent = {
+            "pos_xy": ego_pos[:, :2],
+            "yaw": ego_yaw.reshape(-1),
+            "vel_xy": ego_vel_world[:, :2],
+            "s": ego_frenet["s"],
+            "ey": ego_boundary["ey"],
+            "L": track_len,
+        }
+        other_agent = {
+            "pos_xy": opp_pos[:, :2],
+            "vel_xy": opp_vel_world[:, :2],
+            "s": opp_frenet["s"],
+            "ey": opp_boundary["ey"],
+            "L": track_len,
+        }
+        return obs_opponent(self_agent, other_agent, self.obs_cfg, present=present)
 
     def frenet(self, base_pos: torch.Tensor) -> tuple[dict[str, Any], dict[str, Any]]:
         """Expose Frenet + boundary state (used by evaluation_node)."""

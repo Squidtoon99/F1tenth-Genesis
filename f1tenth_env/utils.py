@@ -267,6 +267,16 @@ def build_obs_track_cache(
         ],
         dim=0,
     )
+    w_tr_left = track_state.get("w_tr_left_torch")
+    if w_tr_left is None:
+        w_tr_left = torch.as_tensor(
+            track_state["w_tr_left"], device=device, dtype=gs.tc_float
+        )
+    w_tr_right = track_state.get("w_tr_right_torch")
+    if w_tr_right is None:
+        w_tr_right = torch.as_tensor(
+            track_state["w_tr_right"], device=device, dtype=gs.tc_float
+        )
     cache = {
         "centerline_t": centerline_t,
         "seg": seg,
@@ -274,6 +284,8 @@ def build_obs_track_cache(
         "cumlen": cumlen,
         "total_len": cumlen[-1].clamp(min=1e-6),
         "n": int(centerline_t.shape[0]),
+        "w_tr_left": w_tr_left,
+        "w_tr_right": w_tr_right,
     }
     track_state["obs_track_cache"] = cache
     return cache

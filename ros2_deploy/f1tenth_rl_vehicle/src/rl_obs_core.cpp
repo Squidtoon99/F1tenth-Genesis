@@ -294,7 +294,7 @@ std::vector<float> TrackObservationBuilder::build(const VehicleState & st) const
   const double total = std::max(fr.L, 1e-6);
   const double speed = std::sqrt(st.vx * st.vx + st.vy * st.vy);
   const double lookahead = speed * cfg_.future_track_horizon_s;
-  const double half_w = 0.5 * cfg_.future_track_width;
+  // future_track_width is deprecated: corridor edges use per-vertex CSV widths.
   const double cos_y = std::cos(st.yaw);
   const double sin_y = std::sin(st.yaw);
 
@@ -326,10 +326,14 @@ std::vector<float> TrackObservationBuilder::build(const VehicleState & st) const
     double n2x = -ty;
     double n2y = tx;
 
-    double lx = cx + half_w * n2x;
-    double ly = cy + half_w * n2y;
-    double rx = cx - half_w * n2x;
-    double ry = cy - half_w * n2y;
+    const int wi0 = seg_idx;
+    const int wi1 = std::min(seg_idx + 1, nw_ - 1);
+    const double w_l = wl_[wi0] + alpha * (wl_[wi1] - wl_[wi0]);
+    const double w_r = wr_[wi0] + alpha * (wr_[wi1] - wr_[wi0]);
+    double lx = cx + w_l * n2x;
+    double ly = cy + w_l * n2y;
+    double rx = cx - w_r * n2x;
+    double ry = cy - w_r * n2y;
 
     auto to_ego = [&](double wx, double wy, double & ox, double & oy) {
       double dx = wx - st.pos_x;

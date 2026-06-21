@@ -18,7 +18,7 @@ vehicle_obs:
     num_obs: 380
     future_track_num_points: 60
     future_track_horizon_s: 6.0
-    future_track_width: 2.2
+    future_track_width: 2.2  # deprecated: corridor edges use CSV w_tr_*_m
     contact_margin_m: 0.08
     clip_obs: 50.0
     lin_vel_scale: 1.0
