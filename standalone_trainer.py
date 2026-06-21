@@ -25,6 +25,28 @@ LOGGER_NAME = "standalone_trainer"
 RECENT_EPISODES_MAX = 50
 
 
+def _maybe_patch_headless_rasterizer() -> None:
+    """Skip pyglet offscreen init when no GUI display is available (CI / agents).
+
+    Matches scripts/physics_check.headless_gs_init; only applied when
+    try_get_display_size fails so interactive Mac runs stay unchanged.
+    """
+    try:
+        gs.utils.try_get_display_size()
+    except Exception:
+        import pyglet
+        from genesis.vis.rasterizer import Rasterizer
+
+        pyglet.options["headless"] = True
+
+        def _headless_build(self):
+            if self._context is None:
+                return
+            self.visualizer = self._context.visualizer
+
+        Rasterizer.build = _headless_build
+
+
 class FlushingStreamHandler(logging.StreamHandler):
     """StreamHandler that flushes after every record so lines appear promptly."""
 
@@ -532,6 +554,7 @@ def main():
 
     device = select_device(args.device)
 
+    _maybe_patch_headless_rasterizer()
     gs.init(
         backend=gs.gpu if torch.cuda.is_available() else gs.cpu,
         precision=args.precision,
