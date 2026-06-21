@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 
-from f1tenth_rl_agent.eval_logic import EpisodeMonitor, sample_centerline_pose
+from f1tenth_rl_agent.eval_logic import EpisodeMonitor, opponent_pose_ahead, sample_centerline_pose
 
 
 def test_lap_detection_and_time():
