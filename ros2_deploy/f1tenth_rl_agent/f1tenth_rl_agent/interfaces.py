@@ -14,6 +14,7 @@ TOPIC_OPP_DRIVE = "/opp_drive"
 TOPIC_MAP = "/map"
 TOPIC_DRIVE = "/drive"
 TOPIC_INITIALPOSE = "/initialpose"
+TOPIC_GOAL_POSE = "/goal_pose"
 
 # --- Internal agent topics ----------------------------------------------------
 TOPIC_TRACK_CENTERLINE = "/rl/track/centerline"

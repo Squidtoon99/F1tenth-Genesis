@@ -47,3 +47,10 @@ def test_stuck_detection():
     assert not ev.stuck
     ev = mon.update(10.0, 100.0, 0.0, 1.5, 1.5, 0.0, 3.5)  # >2s without moving
     assert ev.stuck
+
+
+def test_opponent_pose_ahead_gap():
+    centerline = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]], dtype=np.float32)
+    ox, oy, _ = opponent_pose_ahead(centerline, 0.0, 0.0, gap_m=2.0)
+    assert math.isclose(ox, 2.0, abs_tol=1e-4)
+    assert math.isclose(oy, 0.0, abs_tol=1e-4)

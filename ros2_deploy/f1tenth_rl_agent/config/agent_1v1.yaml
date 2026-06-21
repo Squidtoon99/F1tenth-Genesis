@@ -58,3 +58,6 @@ evaluation:
     map_yaml: "/sim_ws/src/f1tenth_gym_ros/maps/IV_2026_SIM.yaml"
     spawn_max_dist: 1.0
     reset_grace_s: 2.0
+    enable_opponent_spawn: true
+    opponent_spawn_gap_m: 7.0
+    spawn_opponent_on_start: false
