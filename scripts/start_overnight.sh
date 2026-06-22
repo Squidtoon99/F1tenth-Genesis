@@ -53,3 +53,13 @@ echo "Orchestrator launched in tmux session '${SESSION}'."
 echo "  Attach:  tmux attach -t ${SESSION}"
 echo "  Logs:    tail -f outputs/runs/_orchestrator/orchestrator.log"
 echo "  Stop:    tmux kill-session -t ${SESSION}"
+
+CHECKIN_SESSION="${CHECKIN_SESSION:-training_checkins}"
+if tmux has-session -t "${CHECKIN_SESSION}" 2>/dev/null; then
+  echo "WARNING: check-in session '${CHECKIN_SESSION}' already exists; skipping."
+else
+  tmux new-session -d -s "${CHECKIN_SESSION}" -c "${ROOT}" \
+    "bash -lc 'while true; do bash scripts/training_checkin.sh >> outputs/runs/_orchestrator/checkins.log 2>&1; sleep 900; done'"
+  echo "15-min check-ins running in tmux session '${CHECKIN_SESSION}'."
+  echo "  Check-in log: tail -f outputs/runs/_orchestrator/checkins.log"
+fi
