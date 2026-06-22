@@ -44,13 +44,6 @@ def _make_env(*, enable_dr: bool, num_envs: int = 4) -> F1tenthEnv:
     )
 
 
-@pytest.fixture(scope="module")
-def genesis_backend():
-    if not gs._initialized:
-        gs.init(backend=gs.cpu, precision="32", logging_level="warning")
-    return gs
-
-
 def _collect_dr_samples(env: F1tenthEnv, resets: int) -> dict[str, list[float]]:
     samples: dict[str, list[float]] = {
         "tire_friction": [],

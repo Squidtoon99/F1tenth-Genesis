@@ -25,6 +25,39 @@ gs = pytest.importorskip("genesis")
 
 import torch  # noqa: E402
 
+
+def init_genesis_headless(*, precision: str = "32") -> None:
+    """Initialize Genesis without a display (CI / headless macOS)."""
+    try:
+        gs.utils.try_get_display_size()
+    except Exception:
+        import pyglet
+        from genesis.vis.rasterizer import Rasterizer
+
+        pyglet.options["headless"] = True
+
+        def _headless_build(self):
+            if self._context is None:
+                return
+            self.visualizer = self._context.visualizer
+
+        Rasterizer.build = _headless_build
+
+    if not gs._initialized:
+        gs.init(backend=gs.cpu, precision=precision, logging_level="warning")
+
+
+@pytest.fixture(scope="module")
+def genesis_backend():
+    init_genesis_headless(precision="32")
+    return gs
+
+
+@pytest.fixture(scope="module")
+def genesis_backend_f64():
+    init_genesis_headless(precision="64")
+    return gs
+
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 

@@ -47,14 +47,7 @@ def _make_env(cfg: dict, num_envs: int) -> F1tenthEnv:
     )
 
 
-@pytest.fixture(scope="module")
-def genesis_backend():
-    if not gs._initialized:
-        gs.init(backend=gs.cpu, precision="64", logging_level="warning")
-    return gs
-
-
-def test_1v1_contact_soak_zero_nonfinite(genesis_backend):
+def test_1v1_contact_soak_zero_nonfinite(genesis_backend_f64):
     """Spawn ego close behind opponent and chase for many steps with repeated contact."""
     num_envs = 4
     steps = 600

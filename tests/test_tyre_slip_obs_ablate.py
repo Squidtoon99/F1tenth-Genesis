@@ -39,28 +39,6 @@ def _make_env(*, zero_slip: bool, num_envs: int = 2) -> F1tenthEnv:
     )
 
 
-@pytest.fixture(scope="module")
-def genesis_backend():
-    try:
-        gs.utils.try_get_display_size()
-    except Exception:
-        import pyglet
-        from genesis.vis.rasterizer import Rasterizer
-
-        pyglet.options["headless"] = True
-
-        def _headless_build(self):
-            if self._context is None:
-                return
-            self.visualizer = self._context.visualizer
-
-        Rasterizer.build = _headless_build
-
-    if not gs._initialized:
-        gs.init(backend=gs.cpu, precision="32", logging_level="warning")
-    return gs
-
-
 def test_zero_tyre_slip_obs_zeros_channels(genesis_backend):
     num_envs = 2
     expected_dim = int(DEFAULT_CONFIG["obs"]["num_obs"])
