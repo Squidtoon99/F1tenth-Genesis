@@ -5,11 +5,10 @@ environment talks only to an :class:`OpponentController`; whether the opponent i
 a scripted controller or a neural policy is invisible to the env.
 
 Concrete controllers:
-- :class:`ScriptedCenterlineOpponent` - a centerline-following P-controller
-  (shipped, the default 1v1 opponent).
-- :class:`PolicyOpponent` - a frozen-policy opponent for future self-play. It is
-  implemented here so the interface is proven end to end; the self-play training
-  loop (snapshotting the learner, opponent refresh) is intentionally deferred.
+- :class:`ScriptedCenterlineOpponent` - a centerline-following P-controller with
+  closed-loop longitudinal speed control (shipped, the default 1v1 opponent).
+- :class:`PolicyOpponent` - a frozen-policy opponent for self-play. The delayed
+  snapshot/refresh training loop lives in ``standalone_trainer.py`` (``SelfPlayManager``).
 """
 
 from __future__ import annotations

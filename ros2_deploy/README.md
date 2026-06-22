@@ -104,7 +104,9 @@ SIM_NETWORK=dfr_f1tenth_gym_x11 CHECKPOINT_DIR=/abs/path/to/ckpts \
 
 Centerline CSVs are derived from `IV_2026_SIM_smooth.csv` in
 [dfr_f1tenth_gym dev-humble](https://github.com/RMin280/dfr_f1tenth_gym/tree/dev-humble)
-via `scripts/build_centerline_from_raceline.py` (671 points, 2.2 m width).
+via `scripts/build_centerline_from_raceline.py` (671 points). Corridor half-widths
+are **per vertex** from CSV columns `w_tr_left_m` / `w_tr_right_m` (~0.65–0.68 m
+each side, ~1.33 m total mean width — not a uniform 2.2 m band).
 
 **Note:** `ckpt_30000.pt` was trained on Oschersleben — retrain on IV 2026 before
 expecting competitive lap times on the new map.

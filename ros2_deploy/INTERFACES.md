@@ -110,5 +110,6 @@ opponent is absent. This matches `f1tenth_env.observations.obs_opponent`.
 - `num_obs = 380`, `num_actions = 2`
 - `max_speed = 15.0` m/s, `max_steer = 0.44` rad, `clip_actions = 1.0`
 - `contact_margin_m = 0.08`
-- `future_track_num_points = 60`, `future_track_horizon_s = 6.0`, `future_track_min_lookahead_m = 5.0`, `future_track_width = 2.2`
+- `future_track_num_points = 60`, `future_track_horizon_s = 6.0`, `future_track_min_lookahead_m = 5.0`
+- Track corridor edges use per-point `w_tr_left_m` / `w_tr_right_m` from the centerline CSV (~1.33 m total mean on IV_2026_SIM). The legacy `future_track_width = 2.2` config key is deprecated and unused for boundary geometry.
 - hidden layers `[512, 512, 512]`, activation ReLU, `act_limit = 1.0`

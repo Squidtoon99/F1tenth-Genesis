@@ -52,7 +52,9 @@ def test_load_iv2026_bundled_centerline():
     cl, wl, wr = load_track_csv(path)
     assert cl.shape[0] == 671
     assert cl.shape[1] == 2
-    np.testing.assert_allclose(cl[0], [0.0, 0.0], atol=1e-4)
-    np.testing.assert_allclose(cl[-1], [0.0, 0.0], atol=1e-4)
-    np.testing.assert_allclose(wl, 1.1, atol=1e-4)
-    np.testing.assert_allclose(wr, 1.1, atol=1e-4)
+    np.testing.assert_allclose(cl[0], [0.420455, 0.160366], atol=1e-4)
+    np.testing.assert_allclose(cl[-1], [0.385675, 0.106087], atol=1e-4)
+    np.testing.assert_allclose(wl[0], 0.714610, atol=1e-4)
+    np.testing.assert_allclose(wr[0], 0.723019, atol=1e-4)
+    np.testing.assert_allclose(wl.mean(), 0.680687, atol=1e-3)
+    np.testing.assert_allclose(wr.mean(), 0.653404, atol=1e-3)
