@@ -855,7 +855,7 @@ def main():
         )
         selfplay_mgr.bootstrap_opponent(env)
 
-    use_1v1 = args.self_play or args.opponent != "none
+    use_1v1 = args.self_play or args.opponent != "none"
     wandb_run = None
     if args.wandb:
         import wandb
