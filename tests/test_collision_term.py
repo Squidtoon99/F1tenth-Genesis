@@ -8,6 +8,7 @@ we register a small package shim pointing ``.utils`` at the loaded audit module.
 from __future__ import annotations
 
 import importlib.util
+import math
 import os
 import sys
 import types
@@ -16,6 +17,10 @@ import pytest
 import torch
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+# F110 envelope defaults (match config.py).
+_CAR_LENGTH = 0.46
+_CAR_WIDTH = 0.30
 
 
 @pytest.fixture(scope="session")
@@ -36,31 +41,77 @@ def term_mod(real_modules):
     return mod
 
 
-# --- collision threshold ------------------------------------------------------
-def test_collision_threshold_just_inside_and_outside(term_mod):
-    ego = torch.tensor([[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]], dtype=torch.float32)
-    opp = torch.tensor(
-        [[0.39, 0.0], [0.41, 0.0], [10.0, 0.0]], dtype=torch.float32
+def _collision(
+    term_mod,
+    ego_xy,
+    opp_xy,
+    ego_yaw=0.0,
+    car_length=_CAR_LENGTH,
+    car_width=_CAR_WIDTH,
+    margin=0.0,
+):
+    ego = torch.tensor([ego_xy], dtype=torch.float32)
+    opp = torch.tensor([opp_xy], dtype=torch.float32)
+    yaw = torch.tensor([ego_yaw], dtype=torch.float32)
+    return term_mod.collision_mask(
+        ego, opp, yaw, car_length, car_width, margin
+    ).item()
+
+
+# --- anisotropic ego-frame collision -----------------------------------------
+def test_collision_rear_end_within_longitudinal(term_mod):
+    """Directly behind/ahead within long_thresh and ~0 lateral -> collision."""
+    assert _collision(term_mod, (0.0, 0.0), (0.3, 0.0)) is True
+    assert _collision(term_mod, (0.0, 0.0), (-0.3, 0.0)) is True
+
+
+def test_collision_beyond_longitudinal(term_mod):
+    """Directly behind beyond long_thresh -> no collision."""
+    assert _collision(term_mod, (0.0, 0.0), (0.5, 0.0)) is False
+    assert _collision(term_mod, (0.0, 0.0), (-0.5, 0.0)) is False
+
+
+def test_collision_clean_side_by_side_pass(term_mod):
+    """Side-by-side with lateral separation >= car_width -> no collision."""
+    assert _collision(term_mod, (0.0, 0.0), (0.0, 0.35)) is False
+
+
+def test_collision_side_by_side_lateral_overlap(term_mod):
+    """Lateral overlap with small longitudinal offset -> collision."""
+    assert _collision(term_mod, (0.0, 0.0), (0.0, 0.2)) is True
+
+
+def test_collision_rotated_ego_longitudinal(term_mod):
+    """Opponent offset along ego heading after yaw=90deg -> longitudinal."""
+    yaw = math.pi / 2
+    # Opponent 0.3 m ahead in ego frame (north in world when ego faces north).
+    assert _collision(term_mod, (0.0, 0.0), (0.0, 0.3), ego_yaw=yaw) is True
+    # Opponent 0.5 m ahead -> beyond long_thresh.
+    assert _collision(term_mod, (0.0, 0.0), (0.0, 0.5), ego_yaw=yaw) is False
+    # Opponent 0.35 m to ego's left (west in world) -> lateral, no collision.
+    assert _collision(term_mod, (0.0, 0.0), (-0.35, 0.0), ego_yaw=yaw) is False
+
+
+def test_collision_batched_mixed(term_mod):
+    """Vectorized batch: mix of colliding and non-colliding envs."""
+    ego = torch.tensor(
+        [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [1.0, 2.0]], dtype=torch.float32
     )
-    mask = term_mod.collision_mask(ego, opp, 0.4)
-    assert mask.tolist() == [True, False, False]
+    opp = torch.tensor(
+        [[0.3, 0.0], [0.0, 0.35], [0.0, 0.2], [10.0, 10.0]], dtype=torch.float32
+    )
+    yaw = torch.tensor([0.0, 0.0, 0.0, 0.0], dtype=torch.float32)
+    mask = term_mod.collision_mask(
+        ego, opp, yaw, _CAR_LENGTH, _CAR_WIDTH, 0.0
+    )
+    assert mask.tolist() == [True, False, True, False]
 
 
-def test_collision_symmetric_distance(term_mod):
-    ego = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
-    opp = torch.tensor([[1.2, 2.1]], dtype=torch.float32)
-    # distance = sqrt(0.04 + 0.01) ~ 0.2236
-    assert term_mod.collision_mask(ego, opp, 0.3).item() is True
-    assert term_mod.collision_mask(ego, opp, 0.2).item() is False
-
-
-def test_collision_batched(term_mod):
-    g = torch.Generator().manual_seed(1)
-    ego = torch.rand(64, 2, generator=g)
-    opp = torch.rand(64, 2, generator=g)
-    sep = torch.linalg.norm(ego - opp, dim=-1)
-    expected = sep < 0.5
-    assert torch.equal(term_mod.collision_mask(ego, opp, 0.5), expected)
+def test_collision_margin_expands_thresholds(term_mod):
+    """Optional margin widens both longitudinal and lateral thresholds."""
+    # 0.48 m longitudinal: just outside default long_thresh (0.46).
+    assert _collision(term_mod, (0.0, 0.0), (0.48, 0.0), margin=0.0) is False
+    assert _collision(term_mod, (0.0, 0.0), (0.48, 0.0), margin=0.05) is True
 
 
 # --- 1v0 no-regression --------------------------------------------------------
