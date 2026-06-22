@@ -86,11 +86,13 @@ tmux_sessions = [l.split(":")[0] for l in tmux if ":" in l]
 
 trainers = []
 for line in sh("pgrep -af standalone_trainer.py").stdout.strip().splitlines():
-    if "standalone_trainer" not in line:
+    if "standalone_trainer.py" not in line:
+        continue
+    m = re.search(r"--run-id\s+(\S+)", line)
+    if not m:
         continue
     pid = int(line.split()[0])
-    m = re.search(r"--run-id\s+(\S+)", line)
-    run_id = m.group(1) if m else "unknown"
+    run_id = m.group(1)
     step = nan = stale = None
     log_path = root / "outputs" / "runs" / run_id / "run.log"
     if log_path.exists():
