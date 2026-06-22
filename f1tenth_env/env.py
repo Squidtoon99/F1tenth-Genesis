@@ -281,7 +281,7 @@ class F1tenthEnv:
             (self.num_envs,), dtype=gs.tc_float, device=gs.device
         )
         self.reset_buf = torch.zeros(
-            (self.num_envs,), dtype=gs.tc_bool, device=gs.device
+            (self.num_envs,), dtype=torch.bool, device=gs.device
         )
 
         self.episode_steps_buf = torch.zeros(
@@ -852,15 +852,15 @@ class F1tenthEnv:
     def _normalize_reset_mask(self, envs_idx) -> torch.Tensor:
         """Coerce a None / index-list / index-tensor / bool-mask into a bool mask."""
         if envs_idx is None:
-            return torch.ones((self.num_envs,), dtype=gs.tc_bool, device=gs.device)
+            return torch.ones((self.num_envs,), dtype=torch.bool, device=gs.device)
         if isinstance(envs_idx, (list, tuple, np.ndarray)):
-            mask = torch.zeros((self.num_envs,), dtype=gs.tc_bool, device=gs.device)
+            mask = torch.zeros((self.num_envs,), dtype=torch.bool, device=gs.device)
             if len(envs_idx) > 0:
                 mask[list(envs_idx)] = True
             return mask
         if envs_idx.dtype == torch.bool:
             return envs_idx
-        mask = torch.zeros((self.num_envs,), dtype=gs.tc_bool, device=gs.device)
+        mask = torch.zeros((self.num_envs,), dtype=torch.bool, device=gs.device)
         mask[envs_idx] = True
         return mask
 
