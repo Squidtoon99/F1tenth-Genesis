@@ -134,6 +134,19 @@ class PolicyOpponent(OpponentController):
         normed = (obs - self.obs_mean) / torch.sqrt(self.obs_var + self.norm_eps)
         return torch.clamp(normed, -self.norm_clip, self.norm_clip)
 
+    def load_snapshot(
+        self,
+        actor_state_dict: dict[str, torch.Tensor],
+        obs_mean: torch.Tensor,
+        obs_var: torch.Tensor,
+    ) -> None:
+        """Hot-swap frozen actor weights and observation-normalization stats."""
+        self.actor.load_state_dict(actor_state_dict)
+        self.actor.to(device=self.device, dtype=torch.float32)
+        self.actor.eval()
+        self.obs_mean = obs_mean.to(self.device, dtype=torch.float32)
+        self.obs_var = obs_var.to(self.device, dtype=torch.float32)
+
     def act(self, ctx: OpponentContext) -> torch.Tensor:
         if ctx.opp_obs is None:
             raise ValueError(
@@ -184,16 +197,18 @@ def _make_policy_opponent(
         hidden_sizes=hidden,
         activation=torch.nn.ReLU,
         act_limit=1.0,
-    ).to(device)
+    ).to(device=device, dtype=torch.float32)
 
     obs_mean = obs_var = None
     ckpt_path = env_cfg.get("opponent_ckpt")
     if ckpt_path:
-        payload = torch.load(ckpt_path, map_location=device)
+        payload = torch.load(ckpt_path, map_location=device, weights_only=False)
         actor.load_state_dict(payload["actor"])
         if "obs_norm" in payload:
-            obs_mean = payload["obs_norm"]["mean"]
-            obs_var = payload["obs_norm"]["var"]
+            obs_mean = payload["obs_norm"]["mean"].to(dtype=torch.float32)
+            obs_var = payload["obs_norm"]["var"].to(dtype=torch.float32)
+
+    actor.to(device=device, dtype=torch.float32).eval()
 
     return PolicyOpponent(
         actor=actor,

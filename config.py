@@ -144,10 +144,14 @@ DEFAULT_CONFIG = {
         "opponent_spawn_gap_m": 7.0,
         "opponent_kp_ey": 1.0,
         "opponent_kh_heading": 1.0,
-        # Collision termination: end the episode when the cars are within
-        # collision_dist_m. No shaped collision penalty (forfeited progress is the
-        # avoidance incentive).
+        # Collision termination: anisotropic ego-frame box overlap (see
+        # terminations.collision_mask). No shaped collision penalty (forfeited
+        # progress is the avoidance incentive).
         "term_on_collision": True,
+        "car_length": 0.46,
+        "car_width": 0.30,
+        "collision_margin_m": 0.0,
+        # Deprecated: superseded by car_length/car_width/collision_margin_m.
         "collision_dist_m": 0.4,
     },
     "reward": {
@@ -194,6 +198,13 @@ DEFAULT_CONFIG = {
         "replay_buffer_limit": 10**7,
         "batch_size": 1024,
         "update_to_data_ratio": 0.01,
+    },
+    "selfplay": {
+        "snapshot_interval": 20_000,
+        "refresh_interval": 5_000,
+        "pool_size": 5,
+        "sample_mode": "mixed",
+        "mixed_latest_prob": 0.8,
     },
 }
 

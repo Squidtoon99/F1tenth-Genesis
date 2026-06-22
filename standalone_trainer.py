@@ -25,6 +25,157 @@ from qrsac import Models, QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor
 
 LOGGER_NAME = "standalone_trainer"
 RECENT_EPISODES_MAX = 50
+OPP_OBS_BASE_IDX = 380
+OPP_TRACK_GAP_IDX = OPP_OBS_BASE_IDX + 4
+
+
+class SelfPlaySnapshot(dict):
+    """CPU snapshot: actor state_dict + obs-norm stats + learner step."""
+
+    actor: dict[str, torch.Tensor]
+    mean: torch.Tensor
+    var: torch.Tensor
+    step: int
+
+
+class SelfPlayManager:
+    """Delayed self-play: snapshot learner into a pool, refresh opponent periodically."""
+
+    def __init__(
+        self,
+        pool_size: int = 5,
+        snapshot_interval: int = 20_000,
+        refresh_interval: int = 5_000,
+        sample_mode: str = "mixed",
+        mixed_latest_prob: float = 0.8,
+        log: logging.Logger | None = None,
+    ):
+        self.pool_size = pool_size
+        self.snapshot_interval = snapshot_interval
+        self.refresh_interval = refresh_interval
+        self.sample_mode = sample_mode
+        self.mixed_latest_prob = mixed_latest_prob
+        self.log = log or logging.getLogger(LOGGER_NAME)
+        self.pool: deque[SelfPlaySnapshot] = deque(maxlen=pool_size)
+        self.opponent_step: int | None = None
+        self._last_snapshot_step = -1
+        self._last_refresh_step = -1
+        self._episode_wins = 0
+        self._episode_total = 0
+
+    @staticmethod
+    def make_snapshot(
+        models: Models, normalizer: ObsNormalizer, step: int
+    ) -> SelfPlaySnapshot:
+        return SelfPlaySnapshot(
+            actor={
+                k: v.detach().cpu().clone()
+                for k, v in models.actor.state_dict().items()
+            },
+            mean=normalizer.mean.detach().cpu().clone(),
+            var=normalizer.var.detach().cpu().clone(),
+            step=step,
+        )
+
+    def seed_snapshot(self, snapshot: SelfPlaySnapshot) -> None:
+        self.pool.append(snapshot)
+        if self.opponent_step is None:
+            self.opponent_step = snapshot["step"]
+
+    def maybe_snapshot(
+        self, models: Models, normalizer: ObsNormalizer, step: int
+    ) -> bool:
+        if step <= 0 or step % self.snapshot_interval != 0:
+            return False
+        if step == self._last_snapshot_step:
+            return False
+        snap = self.make_snapshot(models, normalizer, step)
+        self.pool.append(snap)
+        self._last_snapshot_step = step
+        self.log.info(
+            "Self-play snapshot pushed at step=%d (pool_size=%d)",
+            step,
+            len(self.pool),
+        )
+        return True
+
+    def _sample_snapshot(self) -> SelfPlaySnapshot | None:
+        if not self.pool:
+            return None
+        if self.sample_mode == "latest":
+            return self.pool[-1]
+        if self.sample_mode == "uniform":
+            return random.choice(list(self.pool))
+        if random.random() < self.mixed_latest_prob:
+            return self.pool[-1]
+        return random.choice(list(self.pool))
+
+    def maybe_refresh(self, env: F1tenthEnv, step: int) -> bool:
+        if not self.pool:
+            return False
+        if step <= 0 or step % self.refresh_interval != 0:
+            return False
+        if step == self._last_refresh_step:
+            return False
+        snap = self._sample_snapshot()
+        if snap is None:
+            return False
+        env.refresh_opponent_policy(snap["actor"], snap["mean"], snap["var"])
+        self.opponent_step = snap["step"]
+        self._last_refresh_step = step
+        self.log.info(
+            "Self-play opponent refreshed at step=%d from snapshot step=%d "
+            "(pool_size=%d sample=%s)",
+            step,
+            snap["step"],
+            len(self.pool),
+            self.sample_mode,
+        )
+        return True
+
+    def bootstrap_opponent(self, env: F1tenthEnv) -> None:
+        """Load the newest pool snapshot into the env opponent (step-0 warm start)."""
+        if not self.pool:
+            return
+        snap = self.pool[-1]
+        env.refresh_opponent_policy(snap["actor"], snap["mean"], snap["var"])
+        self.opponent_step = snap["step"]
+        self.log.info(
+            "Self-play opponent bootstrapped from snapshot step=%d (pool_size=%d)",
+            snap["step"],
+            len(self.pool),
+        )
+
+    def record_episode_outcomes(self, ego_minus_opp_gap: torch.Tensor) -> None:
+        """Win proxy: ego ahead on track when ``s_self - s_other > 0``."""
+        wins = (ego_minus_opp_gap > 0).sum().item()
+        self._episode_wins += int(wins)
+        self._episode_total += int(ego_minus_opp_gap.numel())
+
+    def win_rate(self) -> float:
+        if self._episode_total == 0:
+            return float("nan")
+        return self._episode_wins / self._episode_total
+
+    def reset_win_stats(self) -> None:
+        self._episode_wins = 0
+        self._episode_total = 0
+
+
+def load_init_checkpoint(
+    ckpt_path: str | Path,
+    models: Models,
+    normalizer: ObsNormalizer,
+    device: torch.device,
+    log: logging.Logger,
+) -> None:
+    """Warm-start learner actor + obs normalizer from a standalone checkpoint."""
+    path = Path(ckpt_path)
+    payload = torch.load(path, map_location=device, weights_only=False)
+    models.actor.load_state_dict(payload["actor"])
+    if "obs_norm" in payload:
+        normalizer.load_state_dict(payload["obs_norm"])
+    log.info("Loaded init checkpoint from %s", path)
 
 
 def _maybe_patch_headless_rasterizer() -> None:
@@ -370,12 +521,25 @@ def build_config(args: argparse.Namespace) -> dict:
     if args.n_step is not None:
         cfg["model"]["n_step"] = args.n_step
 
+    sp_defaults = DEFAULT_CONFIG["selfplay"]
+    cfg["selfplay"] = {
+        "snapshot_interval": args.selfplay_snapshot_interval,
+        "refresh_interval": args.selfplay_refresh_interval,
+        "pool_size": args.selfplay_pool_size,
+        "sample_mode": args.selfplay_sample,
+        "mixed_latest_prob": sp_defaults["mixed_latest_prob"],
+    }
+
     # 1v1: enable the opponent + opponent observation block + passing reward.
     # Trained from scratch, so we just size the networks/normalizer at the larger
     # num_obs - no checkpoint surgery. 1v0 (opponent "none") leaves everything as
     # the unchanged solo config.
-    if args.opponent != "none":
-        cfg["env"]["opponent_strategy"] = args.opponent
+    use_1v1 = args.self_play or args.opponent != "none"
+    if use_1v1:
+        if args.self_play:
+            cfg["env"]["opponent_strategy"] = "policy"
+        else:
+            cfg["env"]["opponent_strategy"] = args.opponent
         cfg["env"]["opponent_target_speed"] = args.opponent_target_speed
         cfg["env"]["opponent_spawn_gap_m"] = args.opponent_spawn_gap
         if args.opponent_ckpt is not None:
@@ -513,6 +677,45 @@ def parse_args() -> argparse.Namespace:
         "opponent). Only used when --opponent is not 'none'.",
     )
     parser.add_argument(
+        "--self-play",
+        action="store_true",
+        default=False,
+        help="Enable delayed self-play (implies --opponent policy): snapshot the "
+        "learner into a pool and refresh the frozen policy opponent periodically.",
+    )
+    parser.add_argument(
+        "--selfplay-snapshot-interval",
+        type=int,
+        default=cfg["selfplay"]["snapshot_interval"],
+        help="Environment steps between learner snapshots added to the opponent pool.",
+    )
+    parser.add_argument(
+        "--selfplay-refresh-interval",
+        type=int,
+        default=cfg["selfplay"]["refresh_interval"],
+        help="Environment steps between opponent policy refreshes from the pool.",
+    )
+    parser.add_argument(
+        "--selfplay-pool-size",
+        type=int,
+        default=cfg["selfplay"]["pool_size"],
+        help="Maximum number of past learner snapshots kept in the opponent pool.",
+    )
+    parser.add_argument(
+        "--selfplay-sample",
+        type=str,
+        default=cfg["selfplay"]["sample_mode"],
+        choices=["latest", "uniform", "mixed"],
+        help="How to sample an opponent snapshot from the pool (mixed: 80%% latest).",
+    )
+    parser.add_argument(
+        "--init-ckpt",
+        type=str,
+        default=None,
+        help="Warm-start the learner actor (+ obs_norm) and seed the self-play pool "
+        "from this standalone checkpoint.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="auto",
@@ -633,6 +836,26 @@ def main():
         clip=float(obs_cfg.get("norm_clip", 10.0)),
     )
 
+    if args.init_ckpt is not None:
+        load_init_checkpoint(args.init_ckpt, models, normalizer, device, log)
+
+    selfplay_mgr: SelfPlayManager | None = None
+    if args.self_play:
+        sp_cfg = cfg["selfplay"]
+        selfplay_mgr = SelfPlayManager(
+            pool_size=sp_cfg["pool_size"],
+            snapshot_interval=sp_cfg["snapshot_interval"],
+            refresh_interval=sp_cfg["refresh_interval"],
+            sample_mode=sp_cfg["sample_mode"],
+            mixed_latest_prob=sp_cfg["mixed_latest_prob"],
+            log=log,
+        )
+        selfplay_mgr.seed_snapshot(
+            SelfPlayManager.make_snapshot(models, normalizer, step=0)
+        )
+        selfplay_mgr.bootstrap_opponent(env)
+
+    use_1v1 = args.self_play or args.opponent != "none
     wandb_run = None
     if args.wandb:
         import wandb
@@ -732,6 +955,14 @@ def main():
             completed_returns = episode_rewards[done_bool]
             if completed_returns.numel() > 0:
                 recent_episode_rewards.extend(completed_returns.tolist())
+            if (
+                selfplay_mgr is not None
+                and done_bool.any()
+                and obs.shape[-1] > OPP_TRACK_GAP_IDX
+            ):
+                # Opponent block index 4 is ``s_other - s_self``; negate for ego lead.
+                ego_minus_opp = -obs[done_bool, OPP_TRACK_GAP_IDX]
+                selfplay_mgr.record_episode_outcomes(ego_minus_opp)
             episode_rewards = torch.where(
                 done_bool, torch.zeros_like(episode_rewards), episode_rewards
             )
@@ -739,7 +970,7 @@ def main():
             accumulate_step_diagnostics(diag, reward, actions, obs, extras)
             diag.add_mean("obs/norm_abs", normalizer.normalize(obs).abs())
 
-            if args.opponent != "none" and obs.shape[-1] > 380:
+            if use_1v1 and obs.shape[-1] > OPP_OBS_BASE_IDX:
                 diag.add_mean("metric/opponent_presence", obs[:, -1])
 
             bad_obs_mask = (~torch.isfinite(next_obs)).any(dim=1)
@@ -780,6 +1011,10 @@ def main():
                     critic_loss_accum += losses.critic_loss
                     loss_count += 1
                 last_batch = batch
+
+            if selfplay_mgr is not None:
+                selfplay_mgr.maybe_snapshot(models, normalizer, global_step)
+                selfplay_mgr.maybe_refresh(env, global_step)
 
             if global_step % args.log_interval == 0:
                 elapsed = time.perf_counter() - t_start
@@ -824,7 +1059,7 @@ def main():
                     else float("nan")
                 )
 
-                if args.opponent != "none":
+                if use_1v1:
                     log.info(
                         "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
                         "progress=%.4f passing=%.4f oob_penalty=%.4f tyre_slip=%.4f "
@@ -871,7 +1106,7 @@ def main():
                     diag.vmax("obs/abs"),
                     diag.vmax("obs/norm_abs"),
                 )
-                if args.opponent != "none":
+                if use_1v1:
                     log.info(
                         "  terminations: time_out=%d oob=%d collision=%d "
                         "not_moving=%d invalid=%d lap=%d | opp_presence=%.3f",
@@ -883,6 +1118,22 @@ def main():
                         int(diag.total("term/lap_finished")),
                         diag.mean("metric/opponent_presence"),
                     )
+                    if selfplay_mgr is not None:
+                        opp_age = (
+                            global_step - selfplay_mgr.opponent_step
+                            if selfplay_mgr.opponent_step is not None
+                            else -1
+                        )
+                        log.info(
+                            "  selfplay: pool_size=%d opp_step=%s opp_age=%d "
+                            "win_rate=%.3f (n=%d)",
+                            len(selfplay_mgr.pool),
+                            selfplay_mgr.opponent_step,
+                            opp_age,
+                            selfplay_mgr.win_rate(),
+                            selfplay_mgr._episode_total,
+                        )
+                        selfplay_mgr.reset_win_stats()
                 else:
                     log.info(
                         "  terminations: time_out=%d oob=%d not_moving=%d invalid=%d lap=%d",

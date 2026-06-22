@@ -16,7 +16,7 @@ from .car import (
     setup_entity_controls,
 )
 from .observations import build_observation, obs_opponent
-from .opponents import OpponentContext, make_opponent
+from .opponents import OpponentContext, PolicyOpponent, make_opponent
 from .rewards import (
     compute_rewards,
     init_reward_state,
@@ -735,16 +735,23 @@ class F1tenthEnv:
             )
         )
 
-        # Collision termination (1v1): end the episode when the two cars are within
-        # collision_dist_m of each other. This is the entire collision-handling
-        # story - there is no shaped collision penalty; ending the episode forfeits
-        # all future progress reward, which is a sufficient avoidance incentive.
+        # Collision termination (1v1): anisotropic ego-frame box overlap. This is
+        # the entire collision-handling story - there is no shaped collision
+        # penalty; ending the episode forfeits all future progress reward, which
+        # is a sufficient avoidance incentive.
         if self.opponent is not None and bool(
             self.env_cfg.get("term_on_collision", True)
         ):
-            collision_dist = float(self.env_cfg.get("collision_dist_m", 0.4))
+            ego_yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
             collision = collision_mask(
-                self.base_pos[:, :2], self.opp_base_pos[:, :2], collision_dist
+                self.base_pos[:, :2],
+                self.opp_base_pos[:, :2],
+                ego_yaw,
+                car_length=float(self.env_cfg.get("car_length", 0.46)),
+                car_width=float(self.env_cfg.get("car_width", 0.30)),
+                collision_margin_m=float(
+                    self.env_cfg.get("collision_margin_m", 0.0)
+                ),
             )
             self.reset_buf = self.reset_buf | collision
             self.extras["termination"]["collision"] = collision.to(dtype=gs.tc_float)
@@ -990,6 +997,17 @@ class F1tenthEnv:
             self.opponent, opp_actions, self.opp_steer_state, opp_body_vel
         )
         self.opp_last_actions = opp_actions
+
+    def refresh_opponent_policy(
+        self,
+        state_dict: dict[str, torch.Tensor],
+        obs_mean: torch.Tensor,
+        obs_var: torch.Tensor,
+    ) -> None:
+        """Hot-swap the policy opponent's weights and obs-norm stats (self-play)."""
+        if not isinstance(self.opponent_ctrl, PolicyOpponent):
+            return
+        self.opponent_ctrl.load_snapshot(state_dict, obs_mean, obs_var)
 
     def _dissipative_enabled(self) -> bool:
         return bool(self.env_cfg.get("enable_aero_drag", False)) or (

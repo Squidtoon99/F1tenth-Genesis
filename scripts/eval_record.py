@@ -34,10 +34,14 @@ from f1tenth_env import F1tenthEnv  # noqa: E402
 from qrsac import SquashedGaussianMLPActor  # noqa: E402
 
 
-def build_cfg(opponent: str) -> dict:
+def build_cfg(opponent: str, opponent_ckpt: str | None = None) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     if opponent != "none":
         cfg["env"]["opponent_strategy"] = opponent
+        if opponent == "policy":
+            if not opponent_ckpt:
+                raise ValueError("--opponent-ckpt is required when --opponent policy")
+            cfg["env"]["opponent_ckpt"] = opponent_ckpt
         cfg["obs"]["enable_opponent_obs"] = True
         cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
         cfg["reward"]["reward_scales"]["passing"] = 0.5
@@ -54,7 +58,7 @@ def load_actor_and_norm(ckpt_path: Path, cfg: dict, device: torch.device):
     )
     payload = torch.load(ckpt_path, map_location=device, weights_only=False)
     actor.load_state_dict(payload["actor"])
-    actor.to(device).eval()
+    actor.to(device=device, dtype=torch.float32).eval()
 
     mean = var = None
     if "obs_norm" in payload:
@@ -76,8 +80,14 @@ def main() -> int:
         "--opponent",
         type=str,
         default="scripted",
-        choices=["scripted", "none"],
-        help="match the checkpoint's training setup (1v1 -> scripted)",
+        choices=["scripted", "policy", "none"],
+        help="match the checkpoint's training setup (1v1 -> scripted, self-play -> policy)",
+    )
+    parser.add_argument(
+        "--opponent-ckpt",
+        type=str,
+        default=None,
+        help="frozen policy checkpoint for --opponent policy (self-play eval)",
     )
     parser.add_argument("--precision", type=str, default="32", choices=["32", "64"])
     parser.add_argument("--fps", type=int, default=60)
@@ -107,9 +117,16 @@ def main() -> int:
     )
     device = gs.device
 
-    cfg = build_cfg(args.opponent)
+    if args.opponent == "policy" and not args.opponent_ckpt:
+        print("[eval_record] --opponent policy requires --opponent-ckpt")
+        return 1
+
+    cfg = build_cfg(args.opponent, opponent_ckpt=args.opponent_ckpt)
     actor, norm_mean, norm_var, step = load_actor_and_norm(ckpt_path, cfg, device)
     print(f"[eval_record] loaded checkpoint step={step} obs_dim={cfg['obs']['num_obs']}")
+    if args.opponent == "policy":
+        opp_path = Path(args.opponent_ckpt)
+        print(f"[eval_record] policy opponent: {opp_path.name}")
 
     env = F1tenthEnv(
         env_cfg={
