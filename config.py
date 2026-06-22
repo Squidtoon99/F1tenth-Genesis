@@ -69,19 +69,21 @@ DEFAULT_CONFIG = {
     },
     "env": {
         "num_actions": 2,
-        "episode_length": 25.0,
-        # control_dt = sim_dt * control_interval = 0.1s (10 Hz control). When
-        # changing sim_dt, adjust control_interval inversely to keep control_dt
-        # and episode_length semantics constant.
-        "control_interval": 10,
-        "sim_dt": 0.01,
+        "episode_length": 45.0,
+        # IV_2026_SIM centerline loop is ~144 m; at ~3.2 m/s a full lap needs ~43 s.
+        # 45 s gives one lap plus margin at 10 Hz control (450 steps) without changing
+        # control_dt or episode_length semantics.
+        # control_dt = sim_dt * control_interval = 0.005 * 20 = 0.1 s (10 Hz).
+        # Halving sim_dt (0.01 -> 0.005) while doubling decimation keeps episode
+        # length in seconds and max_episode_steps unchanged (~450 for 45 s).
+        "control_interval": 20,
+        "sim_dt": 0.005,
         # Tuned via scripts/sweep_physics_integration.py: substep counts 2..10 pass
-        # the physics_check stability gate for normal upright driving. Raising
-        # substeps does NOT cure the high-speed spin-out contact NaN (confirmed at
-        # 8 substeps / 1.25ms); that instability is driven by the policy being
-        # steered into the boundary, so it is addressed upstream (clean centerline,
-        # obs clipping, speed-capped reward, fast OOB termination), not here.
+        # the physics_check stability gate for normal upright driving. Finer substeps
+        # (effective 1.25 ms with sim_dt=0.005) help car-car contact stability in 1v1.
         "sim_substeps": 4,
+        # Softer constraint solve window; must stay >= 2 * sim_dt (Genesis Newton gate).
+        "constraint_timeconst": 0.02,
         "solver_iterations": 50,
         "solver_ls_iterations": 50,
         "show_fps": False,
@@ -99,7 +101,9 @@ DEFAULT_CONFIG = {
         "term_not_moving_time_s": 2.0,
         "term_not_moving_min_ds": 1e-3,
         "term_heading_error_rad": 3.0,
-        "target_laps": 0,
+        # End the episode (and emit term/lap_finished) after this many completed laps.
+        # No lap-completion reward is applied; this is termination/logging only.
+        "target_laps": 1,
         "car_spawn_pos": (0.0, 0.0, 0.01),
         "car_spawn_rot": (0.0, 0.0, 0.0),
         "joint_names": [

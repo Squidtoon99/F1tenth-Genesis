@@ -20,6 +20,7 @@ from typing import Any
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from collapse_detector import (  # noqa: E402
@@ -29,12 +30,16 @@ from collapse_detector import (  # noqa: E402
     parse_log_metrics,
     reward_plateau,
 )
+from run_layout import (  # noqa: E402
+    ORCHESTRATOR_META_DIR,
+    default_run_dir,
+    run_log_path,
+)
 
 CHECKPOINT_STEP = 100_000
 POLL_INTERVAL_S = 60
 TRAINER_SCRIPT = ROOT / "standalone_trainer.py"
 HYPOTHESES_PATH = ROOT / "scripts" / "train_hypotheses.yaml"
-OVERNIGHT_DIR = ROOT / "outputs" / "overnight"
 
 
 @dataclass
@@ -100,13 +105,34 @@ def wait_for_trainer(log: logging.Logger, poll_s: int = 30) -> None:
         time.sleep(poll_s)
 
 
+def merge_run_config(
+    defaults: dict[str, Any],
+    hypothesis: dict[str, Any],
+    *,
+    opponent: str = "scripted",
+) -> dict[str, Any]:
+    """Merge YAML defaults + hypothesis args.
+
+    Opponent precedence: hypothesis args > orchestrator CLI > YAML defaults > scripted.
+    """
+    hyp_args = hypothesis.get("args", {}) or {}
+    args = {**defaults, **hyp_args}
+    if "opponent" in hyp_args:
+        args["opponent"] = hyp_args["opponent"]
+    else:
+        args["opponent"] = opponent
+    return args
+
+
 def build_trainer_cmd(
     hypothesis: dict[str, Any],
     defaults: dict[str, Any],
     run_id: str,
     wandb_group: str,
+    *,
+    opponent: str = "scripted",
 ) -> list[str]:
-    args = {**defaults, **hypothesis.get("args", {})}
+    args = merge_run_config(defaults, hypothesis, opponent=opponent)
     cmd = [
         sys.executable,
         str(TRAINER_SCRIPT),
@@ -133,14 +159,31 @@ def build_trainer_cmd(
         "buffer_capacity": "--buffer-capacity",
         "log_interval": "--log-interval",
         "wandb_mode": "--wandb-mode",
+        "run_dir": "--run-dir",
     }
 
     for key, flag in flag_map.items():
         if key in args and args[key] is not None:
             cmd.extend([flag, str(args[key])])
 
+    opponent_mode = str(args.get("opponent", opponent))
+    cmd.extend(["--opponent", opponent_mode])
+    if opponent_mode != "none":
+        optional_opponent_flags = {
+            "opponent_target_speed": "--opponent-target-speed",
+            "opponent_spawn_gap": "--opponent-spawn-gap",
+            "passing_scale": "--passing-scale",
+            "opponent_ckpt": "--opponent-ckpt",
+        }
+        for key, flag in optional_opponent_flags.items():
+            if key in args and args[key] is not None:
+                cmd.extend([flag, str(args[key])])
+
     if args.get("wandb", True):
         cmd.append("--wandb")
+
+    if "run_dir" not in args or args.get("run_dir") is None:
+        cmd.extend(["--run-dir", str(default_run_dir(run_id, root=ROOT))])
 
     return cmd
 
@@ -321,8 +364,10 @@ def record_from_run(
     log_path: Path,
     collapse_verdict: CollapseVerdict | None,
     t0: float,
+    *,
+    orchestrator_opponent: str = "scripted",
 ) -> RunRecord:
-    args = {**defaults, **hypothesis.get("args", {})}
+    args = merge_run_config(defaults, hypothesis, opponent=orchestrator_opponent)
     log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
     metrics = (
         collapse_verdict.metrics
@@ -396,13 +441,44 @@ def parse_args() -> argparse.Namespace:
         default="H1",
         help="First hypothesis key to run",
     )
+    parser.add_argument(
+        "--opponent",
+        type=str,
+        default="scripted",
+        choices=["none", "scripted"],
+        help="1v1 opponent mode for launched trainers (default: scripted). "
+        "Override per run via opponent: in train_hypotheses.yaml defaults or "
+        "hypothesis args.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print built trainer commands for all hypotheses and exit "
+        "(no training launched).",
+    )
     return parser.parse_args()
+
+
+def dry_run_commands(
+    hypotheses: dict[str, dict[str, Any]],
+    defaults: dict[str, Any],
+    wandb_group: str,
+    *,
+    opponent: str = "scripted",
+) -> None:
+    for key, hypothesis in hypotheses.items():
+        run_id = hypothesis.get("id", key)
+        cmd = build_trainer_cmd(
+            hypothesis, defaults, run_id, wandb_group, opponent=opponent
+        )
+        print(f"[{key}] {shlex.join(cmd)}")
 
 
 def main() -> int:
     args = parse_args()
     wandb_group = args.wandb_group or f"overnight_{date.today().isoformat()}"
 
+    OVERNIGHT_DIR = ORCHESTRATOR_META_DIR
     OVERNIGHT_DIR.mkdir(parents=True, exist_ok=True)
     log = setup_logging(OVERNIGHT_DIR / "orchestrator.log")
     log.info("Starting overnight orchestrator (group=%s, max_runs=%d)", wandb_group, args.max_runs)
@@ -411,6 +487,12 @@ def main() -> int:
     if not hypotheses:
         log.error("No hypotheses loaded from %s", args.hypotheses)
         return 1
+
+    if args.dry_run:
+        dry_run_commands(
+            hypotheses, defaults, wandb_group, opponent=args.opponent
+        )
+        return 0
 
     if args.wait_for_trainer:
         wait_for_trainer(log)
@@ -430,16 +512,26 @@ def main() -> int:
         tried.add(next_key)
         hypothesis = hypotheses[next_key]
         run_id = hypothesis.get("id", next_key)
-        log_path = OVERNIGHT_DIR / f"{run_id}.log"
+        log_path = run_log_path(default_run_dir(run_id, root=ROOT))
 
-        cmd = build_trainer_cmd(hypothesis, defaults, run_id, wandb_group)
+        cmd = build_trainer_cmd(
+            hypothesis, defaults, run_id, wandb_group, opponent=args.opponent
+        )
         t0 = time.time()
         proc = run_trainer(cmd, log_path, log)
         status, collapse_verdict = monitor_run(
             proc, log_path, log, checkpoint_step=args.checkpoint_step
         )
         record = record_from_run(
-            next_key, hypothesis, defaults, run_id, status, log_path, collapse_verdict, t0
+            next_key,
+            hypothesis,
+            defaults,
+            run_id,
+            status,
+            log_path,
+            collapse_verdict,
+            t0,
+            orchestrator_opponent=args.opponent,
         )
         history.append(record)
         write_summary(history, OVERNIGHT_DIR / "summary.json", wandb_group)

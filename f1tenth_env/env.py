@@ -406,6 +406,47 @@ class F1tenthEnv:
         quat = self._yaw_to_quat(yaw)
         return pos, quat
 
+    def _centerline_frame(
+        self, idx: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Tangent (B,2), normal (B,2), and point (B,2) for centerline indices."""
+        prev_idx = (idx - 1) % self.num_pts
+        next_idx = (idx + 1) % self.num_pts
+        p_curr = self.centerline_t[idx]
+        tangent = self.centerline_t[next_idx] - self.centerline_t[prev_idx]
+        tangent = tangent / torch.linalg.norm(tangent, dim=1, keepdim=True).clamp_min(
+            1e-8
+        )
+        normal = torch.stack([-tangent[:, 1], tangent[:, 0]], dim=-1)
+        return tangent, normal, p_curr
+
+    def _spawn_opponent_ahead_of_ego(
+        self, ego_pos: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Place the opponent ``opponent_spawn_gap_m`` ahead on the centerline.
+
+        Reuses the ego's lateral offset so the two cars start in the same lane
+        with no independent lateral jitter that could place them side-by-side or
+        overlapping at reset.
+        """
+        gap_m = float(self.env_cfg.get("opponent_spawn_gap_m", 7.0))
+        gap_pts = max(1, int(round(gap_m / self._mean_seg_len)))
+        ego_idx = self._closest_centerline_indices(ego_pos[:, :2])
+        opp_idx = (ego_idx + gap_pts) % self.num_pts
+
+        _, normal_ego, p_ego = self._centerline_frame(ego_idx)
+        lateral = ((ego_pos[:, :2] - p_ego) * normal_ego).sum(dim=-1)
+
+        _, normal_opp, p_opp = self._centerline_frame(opp_idx)
+        spawn_xy = p_opp + normal_opp * lateral.unsqueeze(1)
+
+        tangent, _, _ = self._centerline_frame(opp_idx)
+        yaw = torch.atan2(tangent[:, 1], tangent[:, 0])
+        z = torch.full((ego_pos.shape[0], 1), self.spawn_z, dtype=gs.tc_float, device=self.device)
+        pos = torch.cat([spawn_xy, z], dim=1)
+        quat = self._yaw_to_quat(yaw)
+        return pos, quat
+
     def _sample_spawn_batch(
         self,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, bool]:
@@ -480,14 +521,7 @@ class F1tenthEnv:
         car.set_quat(quat, envs_idx=mask, zero_velocity=True, relative=False)
 
         if self.opponent is not None:
-            # Spawn the opponent a fixed arc-length ahead of the ego so an overtake
-            # is the natural task. Convert the desired gap (m) into a centerline
-            # index offset and place the opponent at ego_idx + offset.
-            gap_m = float(self.env_cfg.get("opponent_spawn_gap_m", 7.0))
-            gap_pts = max(1, int(round(gap_m / self._mean_seg_len)))
-            ego_idx = self._closest_centerline_indices(pos[:, :2])
-            opp_idx = (ego_idx + gap_pts) % self.num_pts
-            opp_pos, opp_quat = self._sample_track_spawn_batch(centerline_idx=opp_idx)
+            opp_pos, opp_quat = self._spawn_opponent_ahead_of_ego(pos)
             self.opponent.set_pos(
                 opp_pos, envs_idx=mask, zero_velocity=True, relative=False
             )

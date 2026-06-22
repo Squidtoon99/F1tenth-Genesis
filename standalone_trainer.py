@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import logging
 import random
 import sys
@@ -19,6 +20,7 @@ import torch.nn as nn
 
 from config import DEFAULT_CONFIG
 from f1tenth_env import F1tenthEnv
+from run_layout import checkpoint_dir, config_snapshot_path, default_run_dir, run_log_path
 from qrsac import Models, QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor
 
 LOGGER_NAME = "standalone_trainer"
@@ -55,22 +57,30 @@ class FlushingStreamHandler(logging.StreamHandler):
         self.flush()
 
 
-def setup_trainer_logging(level: int = logging.INFO) -> logging.Logger:
+def setup_trainer_logging(
+    level: int = logging.INFO,
+    log_file: Path | None = None,
+) -> logging.Logger:
     """Dedicated logger isolated from Genesis root-logger / FPS timer output."""
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(level)
     logger.propagate = False
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
-    handler = FlushingStreamHandler(sys.stdout)
-    handler.setLevel(level)
-    handler.setFormatter(
-        logging.Formatter(
-            fmt="[%(asctime)s] %(name)s %(levelname)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
+    fmt = logging.Formatter(
+        fmt="[%(asctime)s] %(name)s %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
-    logger.addHandler(handler)
+    stdout_handler = FlushingStreamHandler(sys.stdout)
+    stdout_handler.setLevel(level)
+    stdout_handler.setFormatter(fmt)
+    logger.addHandler(stdout_handler)
+    if log_file is not None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setLevel(level)
+        file_handler.setFormatter(fmt)
+        logger.addHandler(file_handler)
     return logger
 
 
@@ -339,7 +349,7 @@ def accumulate_step_diagnostics(
             diag.add_mean(f"reward_term/{name}", value)
 
     metrics = extras.get("metrics", {})
-    for name in ("speed_xy", "lateral_error", "oob_mask", "progress_ds"):
+    for name in ("speed_xy", "lateral_error", "oob_mask", "progress_ds", "lap_count"):
         value = metrics.get(name)
         if isinstance(value, torch.Tensor):
             diag.add_mean(f"metric/{name}", value)
@@ -374,6 +384,16 @@ def build_config(args: argparse.Namespace) -> dict:
         cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
         # Activate the passing reward term (gated by presence of this scale).
         cfg["reward"]["reward_scales"]["passing"] = args.passing_scale
+        # Car-car contacts need a slightly softer / better-resolved constraint solve.
+        cfg["env"]["solver_iterations"] = max(
+            int(cfg["env"].get("solver_iterations", 50)), 80
+        )
+        cfg["env"]["solver_ls_iterations"] = max(
+            int(cfg["env"].get("solver_ls_iterations", 50)), 80
+        )
+        cfg["env"]["constraint_timeconst"] = max(
+            float(cfg["env"].get("constraint_timeconst", 0.02)), 0.04
+        )
     return cfg
 
 
@@ -519,6 +539,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument(
+        "--run-dir",
+        type=str,
+        default=None,
+        help="Directory for this run's artifacts (checkpoints/, run.log, config.json). "
+        "Default: outputs/runs/<run-id>/. Explicit paths support legacy layouts.",
+    )
+    parser.add_argument(
         "--wandb-group",
         type=str,
         default=None,
@@ -560,7 +587,24 @@ def main():
         precision=args.precision,
         performance_mode=True,
     )
-    log = setup_trainer_logging()
+    run_id = args.run_id or uuid.uuid4().hex[:8]
+    run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir = checkpoint_dir(run_dir)
+    config_path = config_snapshot_path(run_dir)
+    trainer_log_path = run_log_path(run_dir)
+
+    log = setup_trainer_logging(log_file=trainer_log_path)
+    log.info("Run id: %s  run_dir: %s  checkpoints: %s", run_id, run_dir, ckpt_dir)
+
+    snapshot = {
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "args": {k: v for k, v in vars(args).items() if v is not None},
+        "config": cfg,
+    }
+    config_path.write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
+    log.info("Wrote config snapshot to %s", config_path)
     log.info("Using device: %s", device)
 
     env = F1tenthEnv(
@@ -589,10 +633,6 @@ def main():
         clip=float(obs_cfg.get("norm_clip", 10.0)),
     )
 
-    run_id = args.run_id or uuid.uuid4().hex[:8]
-    ckpt_dir = Path("outputs/standalone") / run_id
-    log.info("Run id: %s  checkpoints: %s", run_id, ckpt_dir)
-
     wandb_run = None
     if args.wandb:
         import wandb
@@ -602,6 +642,7 @@ def main():
             "name": f"standalone_{run_id}",
             "config": {**cfg, **vars(args)},
             "mode": args.wandb_mode,
+            "dir": str(run_dir),
         }
         if args.wandb_group:
             init_kwargs["group"] = args.wandb_group
@@ -624,6 +665,9 @@ def main():
     diag = RunningStats()
     last_batch: dict[str, torch.Tensor] | None = None
     t_start = time.perf_counter()
+    consecutive_nan_steps = 0
+    total_nan_resets = 0
+    max_consecutive_nan = 20
 
     try:
         while global_step < args.total_steps:
@@ -656,14 +700,15 @@ def main():
                     actions.to(gs.tc_float), n_steps=control_interval
                 )
             except gs.GenesisException as exc:
-                # With sim_substeps raising the rigid solver rate this should be
-                # rare; keep a minimal guard so an isolated transient resets the
-                # batch and advances the step instead of crashing the run.
+                consecutive_nan_steps += 1
+                total_nan_resets += 1
                 log.warning(
                     "Genesis raised at step %d (NaN constraint forces): %s. "
-                    "Resetting envs.",
+                    "Resetting envs (consecutive=%d total=%d).",
                     global_step,
                     exc,
+                    consecutive_nan_steps,
+                    total_nan_resets,
                 )
                 obs, _ = env.reset()
                 obs = obs.to(torch.float32)
@@ -671,7 +716,14 @@ def main():
                 global_step += 1
                 if global_step % args.ckpt_interval == 0:
                     save_checkpoint(models, global_step, ckpt_dir, normalizer)
+                if consecutive_nan_steps >= max_consecutive_nan:
+                    raise RuntimeError(
+                        f"Physics NaN persisted for {consecutive_nan_steps} "
+                        f"consecutive steps ({total_nan_resets} total NaN resets). "
+                        "Decrease sim_dt or abort corrupted run."
+                    ) from exc
                 continue
+            consecutive_nan_steps = 0
             next_obs = next_obs.to(torch.float32)
             reward = reward.to(torch.float32)
             episode_rewards += reward
@@ -804,13 +856,14 @@ def main():
                         mean_q,
                     )
                 log.info(
-                    "  env: speed=%.3f lat_err=%.3f oob_frac=%.3f progress_ds=%.4f | "
-                    "throttle[%.2f..%.2f] steer[%.2f..%.2f] obs_absmax=%.2f "
-                    "norm_obs_absmax=%.2f",
+                    "  env: speed=%.3f lat_err=%.3f oob_frac=%.3f progress_ds=%.4f "
+                    "lap_count=%.3f | throttle[%.2f..%.2f] steer[%.2f..%.2f] "
+                    "obs_absmax=%.2f norm_obs_absmax=%.2f",
                     diag.mean("metric/speed_xy"),
                     diag.mean("metric/lateral_error"),
                     diag.mean("metric/oob_mask"),
                     diag.mean("metric/progress_ds"),
+                    diag.mean("metric/lap_count"),
                     diag.vmin("action/throttle"),
                     diag.vmax("action/throttle"),
                     diag.vmin("action/steer"),
@@ -869,6 +922,7 @@ def main():
                             "env/lateral_error": diag.mean("metric/lateral_error"),
                             "env/oob_frac": diag.mean("metric/oob_mask"),
                             "env/progress_ds": diag.mean("metric/progress_ds"),
+                            "env/lap_count": diag.mean("metric/lap_count"),
                             "action/throttle_max": diag.vmax("action/throttle"),
                             "action/steer_max": diag.vmax("action/steer"),
                             "obs/absmax": diag.vmax("obs/abs"),

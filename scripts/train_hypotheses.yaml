@@ -7,14 +7,20 @@ defaults:
   track: IV_2026_SIM
   wandb: true
   wandb_mode: online
+  # Opponent mode defaults to scripted via orchestrator CLI. Opt out globally with
+  # --opponent none, or per hypothesis with opponent: none in hypothesis args.
+  # Optional overrides (trainer defaults used when omitted):
+  # opponent_target_speed: 3.0
+  # opponent_spawn_gap: 7.0
+  # passing_scale: 0.5
 
 hypotheses:
   H1:
     id: sophy_1m_p64
-    hypothesis: "1M buffer + 40k warmup fixes long-horizon learning"
+    hypothesis: "1M buffer + 40k warmup + 1v1 scripted opponent at 1024 envs"
     priority: 1
     args:
-      num_envs: 512
+      num_envs: 1024
       precision: "64"
       buffer_capacity: 1000000
       alpha: 0.01

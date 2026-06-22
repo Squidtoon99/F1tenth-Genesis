@@ -6,7 +6,7 @@ set -eo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-mkdir -p outputs/overnight
+mkdir -p outputs/runs/_orchestrator
 
 SESSION="${TMUX_SESSION:-overnight}"
 GROUP="${WANDB_GROUP:-overnight_$(date +%Y-%m-%d)}"
@@ -44,12 +44,12 @@ exec python scripts/autonomous_train.py \
   --wait-for-trainer \
   --max-runs "${MAX_RUNS}" \
   --wandb-group "${GROUP}" \
-  >> outputs/overnight/orchestrator.log 2>&1
+  >> outputs/runs/_orchestrator/orchestrator.log 2>&1
 EOF
 
 tmux new-session -d -s "${SESSION}" -c "${ROOT}" "bash -lc '${INNER}'"
 
 echo "Orchestrator launched in tmux session '${SESSION}'."
 echo "  Attach:  tmux attach -t ${SESSION}"
-echo "  Logs:    tail -f outputs/overnight/orchestrator.log"
+echo "  Logs:    tail -f outputs/runs/_orchestrator/orchestrator.log"
 echo "  Stop:    tmux kill-session -t ${SESSION}"
