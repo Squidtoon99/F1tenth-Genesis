@@ -160,8 +160,8 @@ DEFAULT_CONFIG = {
         # Per-episode domain randomization (disabled by default).
         "domain_randomization": {
             "enabled": False,
-            "tire_friction_range": [0.45, 0.85],
-            "ground_friction_range": [0.45, 0.85],
+            "tire_friction_range": [0.6, 0.85],
+            "ground_friction_range": [0.6, 0.85],
             "vehicle_mass_range": [3.2, 4.2],
             "mass_scale_range": [0.9, 1.1],
             "action_latency_steps_range": [0, 2],
