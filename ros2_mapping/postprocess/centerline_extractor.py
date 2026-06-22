@@ -21,6 +21,7 @@ class MapData:
     resolution: float
     origin_x: float
     origin_y: float
+    height: int  # image rows (cv2 row 0 = top = map_server max-y side)
 
 
 @dataclass
@@ -76,11 +77,13 @@ def load_map_yaml(yaml_path: Path) -> MapData:
     grid[unknown] = 2
 
     origin = meta["origin"]
+    height, width = grid.shape
     return MapData(
         grid=grid,
         resolution=float(meta["resolution"]),
         origin_x=float(origin[0]),
         origin_y=float(origin[1]),
+        height=int(height),
     )
 
 
@@ -109,14 +112,18 @@ def _load_known_centerline(
 
 
 def world_to_grid(x: float, y: float, data: MapData) -> tuple[int, int]:
+    """Map (x, y) in map_server world frame to cv2 image (row, col)."""
     col = int((x - data.origin_x) / data.resolution)
-    row = int((y - data.origin_y) / data.resolution)
+    row_map = int((y - data.origin_y) / data.resolution)
+    row = data.height - 1 - row_map
     return row, col
 
 
 def _grid_to_world(row: float, col: float, data: MapData) -> tuple[float, float]:
+    """Map cv2 image (row, col) to map_server world (x, y)."""
+    row_map = data.height - 1 - row
     x = data.origin_x + (col + 0.5) * data.resolution
-    y = data.origin_y + (row + 0.5) * data.resolution
+    y = data.origin_y + (row_map + 0.5) * data.resolution
     return x, y
 
 
