@@ -644,7 +644,7 @@ def save_checkpoint(
 def parse_args() -> argparse.Namespace:
     cfg = DEFAULT_CONFIG
     parser = argparse.ArgumentParser(description="Standalone QRSAC trainer (1v0, single process)")
-    parser.add_argument("--num-envs", type=int, default=512)
+    parser.add_argument("--num-envs", type=int, default=128)
     parser.add_argument("--total-steps", type=int, default=500_000)
     parser.add_argument("--batch-size", type=int, default=cfg["model"]["batch_size"])
     parser.add_argument("--updates-per-step", type=int, default=1)

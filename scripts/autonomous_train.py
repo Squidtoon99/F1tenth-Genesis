@@ -321,23 +321,23 @@ def pick_next_hypothesis(
 
     if last.status == "collapsed_at_100k":
         alpha = float(cfg.get("alpha", 0.1))
-        num_envs = int(cfg.get("num_envs", 256))
+        num_envs = int(cfg.get("num_envs", 128))
         if alpha <= 0.11 and "H2" not in tried:
             log.info("Collapse with alpha=0.1 → trying H2 (explore)")
             return "H2"
         if alpha <= 0.21 and "H3" not in tried:
             log.info("Collapse with alpha=0.2 → trying H3 (stable128)")
             return "H3"
-        if num_envs >= 256 and "H3" not in tried:
-            log.info("Collapse with 256 envs → trying H3 (stable128)")
+        if num_envs > 128 and "H3" not in tried:
+            log.info("Collapse with >128 envs → trying H3 (stable128)")
             return "H3"
         log.info("All stability levers exhausted.")
         return None
 
     if last.had_oom:
-        num_envs = int(cfg.get("num_envs", 256))
+        num_envs = int(cfg.get("num_envs", 128))
         if num_envs > 64:
-            log.info("OOM detected — retry with halved envs (manual fallback to H3-like)")
+            log.info("OOM detected — retry with 128 envs (H3)")
             if "H3" not in tried:
                 return "H3"
         return None

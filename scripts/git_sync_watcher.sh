@@ -10,7 +10,7 @@
 #   GIT_REMOTE          default: origin
 #   GIT_BRANCH          default: current branch
 #   POLL_INTERVAL_S     default: 900 (15 min)
-#   BLEEDING_NUM_ENVS   default: 128 when another trainer is active, else 256
+#   BLEEDING_NUM_ENVS   default: 128
 #   BLEEDING_TOTAL_STEPS default: 100000
 #   BLEEDING_GPU_FREE_MIB minimum free GPU memory to launch (default: 6000)
 set -eo pipefail
@@ -104,13 +104,7 @@ launch_bleeding_trainer() {
   local short_sha="${sha:0:8}"
   local run_id="bleeding_${short_sha}_p64"
   local run_dir="${ROOT}/outputs/runs/${run_id}"
-  local num_envs="${BLEEDING_NUM_ENVS:-}"
-
-  if other_trainer_running; then
-    num_envs="${num_envs:-128}"
-  else
-    num_envs="${num_envs:-256}"
-  fi
+  local num_envs="${BLEEDING_NUM_ENVS:-128}"
 
   local free_mib
   free_mib=$(gpu_free_mib)
