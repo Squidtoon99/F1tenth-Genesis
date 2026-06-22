@@ -8,10 +8,14 @@ cd "$ROOT"
 echo "=== CHECKIN $(date -Is) ==="
 
 echo "--- trainer ---"
-pgrep -af "[p]ython standalone_trainer.py" || echo "no trainer"
+pgrep -af "[s]tandalone_trainer.py" || echo "no trainer"
 
 echo "--- orchestrator ---"
-pgrep -af "[p]ython scripts/autonomous_train.py" || echo "no orchestrator"
+pgrep -af "[a]utonomous_train.py" || echo "no orchestrator"
+
+echo "--- git sync ---"
+pgrep -af "[g]it_sync_watcher.sh" || echo "no git sync watcher"
+pgrep -af "[b]leeding_" || true
 
 echo "--- latest run log ---"
 latest=$(find outputs/runs -name run.log -not -path '*/_orchestrator/*' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)

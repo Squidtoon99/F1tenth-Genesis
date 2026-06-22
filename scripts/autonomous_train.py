@@ -82,7 +82,7 @@ def load_hypotheses(path: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any
 
 def trainer_processes() -> list[int]:
     result = subprocess.run(
-        ["pgrep", "-f", "python standalone_trainer.py"],
+        ["pgrep", "-f", "standalone_trainer.py"],
         capture_output=True,
         text=True,
         check=False,
@@ -215,7 +215,7 @@ def latest_logged_step(log_path: Path) -> int | None:
     if not log_path.exists():
         return None
     text = log_path.read_text(encoding="utf-8", errors="replace")
-    matches = re.findall(r"step=(\d+) ", text)
+    matches = re.findall(r"standalone_trainer INFO: step=(\d+) buffer=", text)
     return int(matches[-1]) if matches else None
 
 
