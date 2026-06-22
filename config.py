@@ -191,6 +191,13 @@ DEFAULT_CONFIG = {
         "batch_size": 1024,
         "update_to_data_ratio": 0.01,
     },
+    "selfplay": {
+        "snapshot_interval": 20_000,
+        "refresh_interval": 5_000,
+        "pool_size": 5,
+        "sample_mode": "mixed",
+        "mixed_latest_prob": 0.8,
+    },
 }
 
 

@@ -16,7 +16,7 @@ from .car import (
     setup_entity_controls,
 )
 from .observations import build_observation, obs_opponent
-from .opponents import OpponentContext, make_opponent
+from .opponents import OpponentContext, PolicyOpponent, make_opponent
 from .rewards import (
     compute_rewards,
     init_reward_state,
@@ -956,6 +956,17 @@ class F1tenthEnv:
             self.opponent, opp_actions, self.opp_steer_state, opp_body_vel
         )
         self.opp_last_actions = opp_actions
+
+    def refresh_opponent_policy(
+        self,
+        state_dict: dict[str, torch.Tensor],
+        obs_mean: torch.Tensor,
+        obs_var: torch.Tensor,
+    ) -> None:
+        """Hot-swap the policy opponent's weights and obs-norm stats (self-play)."""
+        if not isinstance(self.opponent_ctrl, PolicyOpponent):
+            return
+        self.opponent_ctrl.load_snapshot(state_dict, obs_mean, obs_var)
 
     def _dissipative_enabled(self) -> bool:
         return bool(self.env_cfg.get("enable_aero_drag", False)) or (
