@@ -54,12 +54,13 @@ echo "  Attach:  tmux attach -t ${SESSION}"
 echo "  Logs:    tail -f outputs/runs/_orchestrator/orchestrator.log"
 echo "  Stop:    tmux kill-session -t ${SESSION}"
 
-CHECKIN_SESSION="${CHECKIN_SESSION:-training_checkins}"
-if tmux has-session -t "${CHECKIN_SESSION}" 2>/dev/null; then
-  echo "WARNING: check-in session '${CHECKIN_SESSION}' already exists; skipping."
+CHECKIN_SESSION="${CHECKIN_SESSION:-training_supervisor}"
+SUPERVISOR_SESSION="${SUPERVISOR_SESSION:-training_supervisor}"
+if tmux has-session -t "${SUPERVISOR_SESSION}" 2>/dev/null; then
+  echo "WARNING: supervisor session '${SUPERVISOR_SESSION}' already exists; skipping."
 else
-  tmux new-session -d -s "${CHECKIN_SESSION}" -c "${ROOT}" \
-    "bash -lc 'while true; do bash scripts/training_checkin.sh >> outputs/runs/_orchestrator/checkins.log 2>&1; sleep 900; done'"
-  echo "15-min check-ins running in tmux session '${CHECKIN_SESSION}'."
-  echo "  Check-in log: tail -f outputs/runs/_orchestrator/checkins.log"
+  SUPERVISOR_INTERVAL_S="${SUPERVISOR_INTERVAL_S:-1800}" bash scripts/start_supervisor.sh
+  echo "30-min supervisor running in tmux session '${SUPERVISOR_SESSION}'."
+  echo "  Supervisor log: tail -f outputs/runs/_supervisor/supervisor.log"
+  echo "  State JSON:     cat outputs/runs/_supervisor/state.json"
 fi

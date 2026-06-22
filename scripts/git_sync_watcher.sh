@@ -36,6 +36,9 @@ WATCH_PREFIXES=(
   f1tenth_env/
 )
 
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/lib/git_autosync.sh"
+
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] git_sync $*" | tee -a "$LOG_FILE"
 }
@@ -182,14 +185,15 @@ while true; do
   fi
 
   if [ "$local_sha" != "$remote_sha" ]; then
-    log "behind remote (${local_sha:0:8} -> ${remote_sha:0:8}); pulling"
-    if ! git pull --ff-only "$REMOTE" "$BRANCH" >>"$LOG_FILE" 2>&1; then
-      log "git pull failed — resolve manually"
+    log "behind remote (${local_sha:0:8} -> ${remote_sha:0:8}); syncing"
+    if safe_git_sync "$LOG_FILE"; then
+      local_sha=$(git rev-parse HEAD)
+      log "now at ${local_sha:0:8}"
+    else
+      log "git sync failed — retry next poll"
       sleep "$POLL_INTERVAL_S"
       continue
     fi
-    local_sha=$(git rev-parse HEAD)
-    log "now at ${local_sha:0:8}"
   fi
 
   if [ "$local_sha" = "${LAST_TRAINED_SHA:-}" ]; then
