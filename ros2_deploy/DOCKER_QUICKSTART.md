@@ -274,3 +274,28 @@ cd /path/to/dfr_f1tenth_gym && docker compose restart
 ```
 
 More detail: [`README.md`](README.md), [`INTERFACES.md`](INTERFACES.md).
+
+---
+
+## 1v1 opponent obs validation (387-dim)
+
+With the gym 1v1 bridge running and `agent_1v1.yaml` / `agent_1v1_detector.yaml` in the container:
+
+```bash
+# GT wiring: observation_builder uses /ego_racecar/opp_odom (tight parity)
+docker exec -it dfr_f1tenth_gym-sim-1 bash -lc '
+  source /opt/ros/humble/setup.bash && source /sim_ws/.venv/bin/activate &&
+  source /sim_ws/install/setup.bash &&
+  cd /sim_ws/src/f1tenth_rl_agent/test &&
+  python validate_opponent_obs_gym.py --duration-s 20 --min-samples 30 \
+    --pos-tol 0.05 --vel-tol 0.5 --opp-reference-topic /ego_racecar/opp_odom'
+
+# Detector path: observation_builder uses /rl/opponent/odom (LiDAR detector)
+# Run a single opponent_detector + observation_builder with agent_1v1_detector.yaml first.
+python validate_opponent_obs_gym.py --duration-s 25 --min-samples 50 \
+  --pos-tol 0.1 --vel-tol 3.0 --opp-reference-topic /rl/opponent/odom
+```
+
+Measured on IV_2026_SIM (Jun 2026): GT wiring p95 position error < 0.05 m on all opponent
+channels; detector world position vs `/ego_racecar/opp_odom` mean ~0.56 m (p95 ~0.89 m);
+detector→obs wiring p95 position error < 0.1 m when referencing `/rl/opponent/odom`.
