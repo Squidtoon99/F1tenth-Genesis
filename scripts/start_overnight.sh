@@ -53,3 +53,14 @@ echo "Orchestrator launched in tmux session '${SESSION}'."
 echo "  Attach:  tmux attach -t ${SESSION}"
 echo "  Logs:    tail -f outputs/runs/_orchestrator/orchestrator.log"
 echo "  Stop:    tmux kill-session -t ${SESSION}"
+
+CHECKIN_SESSION="${CHECKIN_SESSION:-training_supervisor}"
+SUPERVISOR_SESSION="${SUPERVISOR_SESSION:-training_supervisor}"
+if tmux has-session -t "${SUPERVISOR_SESSION}" 2>/dev/null; then
+  echo "WARNING: supervisor session '${SUPERVISOR_SESSION}' already exists; skipping."
+else
+  SUPERVISOR_INTERVAL_S="${SUPERVISOR_INTERVAL_S:-1800}" bash scripts/start_supervisor.sh
+  echo "30-min supervisor running in tmux session '${SUPERVISOR_SESSION}'."
+  echo "  Supervisor log: tail -f outputs/runs/_supervisor/supervisor.log"
+  echo "  State JSON:     cat outputs/runs/_supervisor/state.json"
+fi
