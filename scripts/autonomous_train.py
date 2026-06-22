@@ -82,7 +82,7 @@ def load_hypotheses(path: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any
 
 def trainer_processes() -> list[int]:
     result = subprocess.run(
-        ["pgrep", "-f", "python standalone_trainer.py"],
+        ["pgrep", "-f", "standalone_trainer.py"],
         capture_output=True,
         text=True,
         check=False,
@@ -110,10 +110,12 @@ def merge_run_config(
     hypothesis: dict[str, Any],
     *,
     opponent: str = "scripted",
+    self_play: bool = True,
 ) -> dict[str, Any]:
     """Merge YAML defaults + hypothesis args.
 
     Opponent precedence: hypothesis args > orchestrator CLI > YAML defaults > scripted.
+    Self-play precedence: hypothesis args > orchestrator CLI > default True.
     """
     hyp_args = hypothesis.get("args", {}) or {}
     args = {**defaults, **hyp_args}
@@ -121,6 +123,10 @@ def merge_run_config(
         args["opponent"] = hyp_args["opponent"]
     else:
         args["opponent"] = opponent
+    if "self_play" in hyp_args:
+        args["self_play"] = bool(hyp_args["self_play"])
+    else:
+        args["self_play"] = self_play
     return args
 
 
@@ -131,8 +137,9 @@ def build_trainer_cmd(
     wandb_group: str,
     *,
     opponent: str = "scripted",
+    self_play: bool = True,
 ) -> list[str]:
-    args = merge_run_config(defaults, hypothesis, opponent=opponent)
+    args = merge_run_config(defaults, hypothesis, opponent=opponent, self_play=self_play)
     cmd = [
         sys.executable,
         str(TRAINER_SCRIPT),
@@ -166,18 +173,34 @@ def build_trainer_cmd(
         if key in args and args[key] is not None:
             cmd.extend([flag, str(args[key])])
 
-    opponent_mode = str(args.get("opponent", opponent))
-    cmd.extend(["--opponent", opponent_mode])
-    if opponent_mode != "none":
-        optional_opponent_flags = {
-            "opponent_target_speed": "--opponent-target-speed",
-            "opponent_spawn_gap": "--opponent-spawn-gap",
-            "passing_scale": "--passing-scale",
-            "opponent_ckpt": "--opponent-ckpt",
+    use_self_play = bool(args.get("self_play", self_play))
+    if use_self_play:
+        cmd.append("--self-play")
+        selfplay_flags = {
+            "selfplay_snapshot_interval": "--selfplay-snapshot-interval",
+            "selfplay_refresh_interval": "--selfplay-refresh-interval",
+            "selfplay_pool_size": "--selfplay-pool-size",
+            "selfplay_sample": "--selfplay-sample",
+            "init_ckpt": "--init-ckpt",
         }
-        for key, flag in optional_opponent_flags.items():
+        for key, flag in selfplay_flags.items():
             if key in args and args[key] is not None:
                 cmd.extend([flag, str(args[key])])
+        if "passing_scale" in args and args["passing_scale"] is not None:
+            cmd.extend(["--passing-scale", str(args["passing_scale"])])
+    else:
+        opponent_mode = str(args.get("opponent", opponent))
+        cmd.extend(["--opponent", opponent_mode])
+        if opponent_mode != "none":
+            optional_opponent_flags = {
+                "opponent_target_speed": "--opponent-target-speed",
+                "opponent_spawn_gap": "--opponent-spawn-gap",
+                "passing_scale": "--passing-scale",
+                "opponent_ckpt": "--opponent-ckpt",
+            }
+            for key, flag in optional_opponent_flags.items():
+                if key in args and args[key] is not None:
+                    cmd.extend([flag, str(args[key])])
 
     if args.get("wandb", True):
         cmd.append("--wandb")
@@ -192,7 +215,7 @@ def latest_logged_step(log_path: Path) -> int | None:
     if not log_path.exists():
         return None
     text = log_path.read_text(encoding="utf-8", errors="replace")
-    matches = re.findall(r"step=(\d+) ", text)
+    matches = re.findall(r"standalone_trainer INFO: step=(\d+) buffer=", text)
     return int(matches[-1]) if matches else None
 
 
@@ -366,8 +389,14 @@ def record_from_run(
     t0: float,
     *,
     orchestrator_opponent: str = "scripted",
+    orchestrator_self_play: bool = True,
 ) -> RunRecord:
-    args = merge_run_config(defaults, hypothesis, opponent=orchestrator_opponent)
+    args = merge_run_config(
+        defaults,
+        hypothesis,
+        opponent=orchestrator_opponent,
+        self_play=orchestrator_self_play,
+    )
     log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
     metrics = (
         collapse_verdict.metrics
@@ -446,9 +475,17 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="scripted",
         choices=["none", "scripted"],
-        help="1v1 opponent mode for launched trainers (default: scripted). "
+        help="1v1 opponent mode when --no-self-play (default: scripted). "
         "Override per run via opponent: in train_hypotheses.yaml defaults or "
         "hypothesis args.",
+    )
+    parser.add_argument(
+        "--self-play",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable delayed self-play for launched trainers (default: on). "
+        "Uses --opponent policy with periodic snapshot refresh. Disable with "
+        "--no-self-play to fall back to scripted opponents.",
     )
     parser.add_argument(
         "--dry-run",
@@ -465,11 +502,17 @@ def dry_run_commands(
     wandb_group: str,
     *,
     opponent: str = "scripted",
+    self_play: bool = True,
 ) -> None:
     for key, hypothesis in hypotheses.items():
         run_id = hypothesis.get("id", key)
         cmd = build_trainer_cmd(
-            hypothesis, defaults, run_id, wandb_group, opponent=opponent
+            hypothesis,
+            defaults,
+            run_id,
+            wandb_group,
+            opponent=opponent,
+            self_play=self_play,
         )
         print(f"[{key}] {shlex.join(cmd)}")
 
@@ -490,7 +533,11 @@ def main() -> int:
 
     if args.dry_run:
         dry_run_commands(
-            hypotheses, defaults, wandb_group, opponent=args.opponent
+            hypotheses,
+            defaults,
+            wandb_group,
+            opponent=args.opponent,
+            self_play=args.self_play,
         )
         return 0
 
@@ -515,7 +562,12 @@ def main() -> int:
         log_path = run_log_path(default_run_dir(run_id, root=ROOT))
 
         cmd = build_trainer_cmd(
-            hypothesis, defaults, run_id, wandb_group, opponent=args.opponent
+            hypothesis,
+            defaults,
+            run_id,
+            wandb_group,
+            opponent=args.opponent,
+            self_play=args.self_play,
         )
         t0 = time.time()
         proc = run_trainer(cmd, log_path, log)
@@ -532,6 +584,7 @@ def main() -> int:
             collapse_verdict,
             t0,
             orchestrator_opponent=args.opponent,
+            orchestrator_self_play=args.self_play,
         )
         history.append(record)
         write_summary(history, OVERNIGHT_DIR / "summary.json", wandb_group)
