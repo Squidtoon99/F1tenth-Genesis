@@ -52,6 +52,9 @@ DEFAULT_CONFIG = {
         "norm_clip": 10.0,
         "norm_eps": 1e-8,
         "contact_margin_m": 0.08,
+        # When True, zero obs[372:380] in training so a deploy model trained without
+        # tyre-slip sensing matches gym/car (which publish zeros). Default off.
+        "zero_tyre_slip_obs": False,
         # 1v1: when enabled, an opponent-relative block of size opponent_obs_dim is
         # appended to the observation (num_obs becomes 380 + opponent_obs_dim). Off
         # by default so the solo (1v0) observation stays 380-dim and unchanged.

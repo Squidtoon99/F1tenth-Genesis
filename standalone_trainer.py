@@ -540,6 +540,9 @@ def build_config(args: argparse.Namespace) -> dict:
             "enabled": True,
         }
 
+    if getattr(args, "zero_tyre_slip_obs", False):
+        cfg["obs"]["zero_tyre_slip_obs"] = True
+
     sp_defaults = DEFAULT_CONFIG["selfplay"]
     cfg["selfplay"] = {
         "snapshot_interval": args.selfplay_snapshot_interval,
@@ -694,6 +697,12 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Reward scale for the 1v1 passing term (track position gained on the "
         "opponent). Only used when --opponent is not 'none'.",
+    )
+    parser.add_argument(
+        "--zero-tyre-slip-obs",
+        action="store_true",
+        default=False,
+        help="Zero obs[372:380] in training to match deploy/gym (no slip sensing).",
     )
     parser.add_argument(
         "--domain-randomization",

@@ -297,4 +297,7 @@ def build_observation(
     if clip_obs > 0.0:
         obs = torch.clamp(obs, min=-clip_obs, max=clip_obs)
 
+    if bool(obs_cfg.get("zero_tyre_slip_obs", False)):
+        obs[:, 372:380] = 0.0
+
     return obs

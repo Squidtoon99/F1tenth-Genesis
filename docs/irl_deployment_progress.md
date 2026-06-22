@@ -32,7 +32,7 @@ Sim deploy parity and on-car validation path.
 | --- | --- | --- |
 | Solo sim deploy (380-dim) | 90% | `obs_core` parity tests pass; IV_2026 map bundled |
 | 1v1 sim deploy (387-dim) | 70% | `enable_opponent_obs` path in agent + vehicle stacks; detector uncommitted (#8) |
-| Tyre-slip deploy parity | 30% | Gym/car publish zeros; training uses real slip (#7) |
+| Tyre-slip deploy parity | 60% | `--zero-tyre-slip-obs` ablates `[372:380]` in training (#7); on-car estimator deferred |
 | Real-track centerline | 0% | No surveyed map aligned to PF frame (#9) |
 | Solo IRL shakedown | 0% | No staged hardware run, bags, or lap logs (#10) |
 
@@ -50,7 +50,7 @@ Sim deploy parity and on-car validation path.
 | Self-play from stale ckpt | Model | **PARTIAL** (#4) | `SelfPlayManager` + `--self-play` in trainer; needs clean 1v1 init |
 | Domain randomization | Model | **OPEN** (#5) | Not implemented |
 | Genesis NaN under contact | Model | **PARTIAL** (#6) | Mitigation in env; no NaN-rate metric / long soak |
-| Tyre-slip train/deploy gap | Deploy | **OPEN** (#7) | Zeros in `vehicle_obs` / gym; real slip in training |
+| Tyre-slip train/deploy gap | Deploy | **PARTIAL** (#7) | `zero_tyre_slip_obs` flag zeros `[372:380]` in training; on-car slip estimator hardware-gated/deferred |
 | Opponent detector uncommitted | Deploy | **OPEN** (#8) | `opponent_detector_node.cpp` WIP; not in main commits |
 | Real-track mapping | Deploy | **OPEN** (#9) | No aligned centerline CSV for physical track |
 | Solo IRL shakedown | Deploy | **OPEN** (#10) | Hardware milestone not started |
@@ -72,7 +72,7 @@ Critical path (from plan):
 8. **#9 Real-track map** — SLAM + aligned centerline; verify `obs[10] ≈ 0`
 9. **#10 Solo IRL shakedown** — staged low-speed run, bags, E-stop check
 10. **#5 Domain randomization** — friction/mass/latency/obs noise
-11. **#7 Tyre-slip parity** — estimate on-car or ablate in training
+11. ~~**#7 Tyre-slip parity**~~ — training ablate via `zero_tyre_slip_obs` (on-car estimator deferred)
 12. **#6 NaN soak** — metric + long 1v1 contact test
 
 Parallel: #5 and #6 can run alongside retrains.
