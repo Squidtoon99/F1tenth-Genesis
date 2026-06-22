@@ -84,8 +84,8 @@ def sample_dr_on_reset(
         val = cfg.get(key, default)
         return float(val[0]), float(val[1])
 
-    tf_lo, tf_hi = _range("tire_friction_range", (0.45, 0.85))
-    gf_lo, gf_hi = _range("ground_friction_range", (0.45, 0.85))
+    tf_lo, tf_hi = _range("tire_friction_range", (0.6, 0.85))
+    gf_lo, gf_hi = _range("ground_friction_range", (0.6, 0.85))
     mass_lo, mass_hi = _range("vehicle_mass_range", (3.2, 4.2))
     scale_lo, scale_hi = _range("mass_scale_range", (0.9, 1.1))
     act_lat_lo, act_lat_hi = _range(

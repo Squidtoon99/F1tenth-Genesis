@@ -7,12 +7,16 @@ import argparse
 import copy
 import json
 import logging
+import os
+import platform
 import random
 import sys
 import time
 import uuid
 from collections import deque
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 import genesis as gs
 import torch
@@ -589,6 +593,22 @@ def select_device(device_arg: str) -> torch.device:
     return torch.device(device_arg)
 
 
+def select_genesis_backend(name: str):
+    """Resolve a Genesis compute backend. 'gpu' uses CUDA on NVIDIA and Metal on
+    Apple Silicon. 'auto' only auto-selects a discrete CUDA GPU and otherwise
+    stays on CPU (on Apple Silicon the CPU backend is faster for this workload,
+    so Metal must be requested explicitly via --backend gpu/metal)."""
+    if name == "cpu":
+        return gs.cpu
+    if name == "gpu":
+        return gs.gpu
+    if name == "metal":
+        return getattr(gs, "metal", gs.gpu)
+    if name == "cuda":
+        return getattr(gs, "cuda", gs.gpu)
+    return gs.gpu if torch.cuda.is_available() else gs.cpu
+
+
 def build_models(
     cfg: dict, device: torch.device, alpha: float = 0.01
 ) -> tuple[Models, QRSACTrainer]:
@@ -756,6 +776,15 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", "cpu", "cuda"],
     )
     parser.add_argument(
+        "--backend",
+        type=str,
+        default="auto",
+        choices=["auto", "cpu", "gpu", "cuda", "metal"],
+        help="Genesis sim backend. 'gpu' uses CUDA (NVIDIA) or Metal (Apple "
+        "Silicon); 'auto' prefers any available GPU. Note: the Metal backend "
+        "only supports precision=32.",
+    )
+    parser.add_argument(
         "--precision",
         type=str,
         default="64",
@@ -771,7 +800,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--wandb-mode",
         type=str,
-        default="offline",
+        default=os.getenv("WANDB_MODE", "online"),
         choices=["online", "offline", "disabled"],
     )
     parser.add_argument("--run-id", type=str, default=None)
@@ -798,6 +827,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main():
+    load_dotenv()
     args = parse_args()
 
     random.seed(args.seed)
@@ -816,14 +846,21 @@ def main():
     control_interval = cfg["env"]["control_interval"]
     n_step = model_cfg["n_step"]
 
-    device = select_device(args.device)
-
     _maybe_patch_headless_rasterizer()
+    backend = select_genesis_backend(args.backend)
     gs.init(
-        backend=gs.gpu if torch.cuda.is_available() else gs.cpu,
+        backend=backend,
         precision=args.precision,
         performance_mode=True,
     )
+    # Keep the RL pipeline (normalizer, networks, replay buffer) on the same
+    # device as the Genesis sim so env outputs don't straddle two devices. On a
+    # GPU backend gs.device is the accelerator (CUDA / Apple MPS); on CPU it is
+    # cpu and we honour the explicit --device choice.
+    if backend == gs.cpu:
+        device = select_device(args.device)
+    else:
+        device = gs.device
     run_id = args.run_id or uuid.uuid4().hex[:8]
     run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -894,16 +931,23 @@ def main():
     if args.wandb:
         import wandb
 
+        tags = ["standalone", run_id]
+        if platform.system() == "Darwin":
+            tags.append("mac")
         init_kwargs = {
-            "project": "f1tenth-genesis",
+            "project": os.getenv("WANDB_PROJECT", "f1tenth-genesis"),
             "name": f"standalone_{run_id}",
+            "id": run_id,
+            "resume": "allow",
             "config": {**cfg, **vars(args)},
-            "mode": args.wandb_mode,
+            "mode": os.getenv("WANDB_MODE", args.wandb_mode),
             "dir": str(run_dir),
+            "tags": tags,
         }
+        if entity := os.getenv("WANDB_ENTITY"):
+            init_kwargs["entity"] = entity
         if args.wandb_group:
             init_kwargs["group"] = args.wandb_group
-            init_kwargs["tags"] = [run_id]
         if args.hypothesis:
             init_kwargs["notes"] = args.hypothesis
         wandb_run = wandb.init(**init_kwargs)
