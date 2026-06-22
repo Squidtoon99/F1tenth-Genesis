@@ -23,12 +23,31 @@ struct ObsConfig
   int num_obs = 380;
   int future_track_num_points = 60;
   double future_track_horizon_s = 6.0;
+  // Lower bound on the future-point lookahead distance (matches training
+  // obs_future_track_points: lookahead = max(speed * horizon, min_lookahead)).
+  double future_track_min_lookahead_m = 5.0;
   double future_track_width = 2.2;  // deprecated: corridor uses per-vertex CSV widths
   double contact_margin_m = 0.08;
   double clip_obs = 50.0;
   double lin_vel_scale = 1.0;
   double ang_vel_scale = 1.0;
   double lin_acc_scale = 1.0;
+  // 1v1: when enabled, a 7-dim opponent-relative block is appended at [380:387]
+  // (num_obs becomes 387). Off by default to preserve the solo deploy.
+  bool enable_opponent_obs = false;
+  int opponent_obs_dim = 7;
+};
+
+// Opponent estimate in the map frame. Velocity is world-frame (the obs block
+// rotates the relative velocity into the ego body frame). When present is false
+// the appended block is the exact zero sentinel (matches training 1v0).
+struct OpponentState
+{
+  double pos_x = 0.0;
+  double pos_y = 0.0;
+  double vx = 0.0;  // world frame
+  double vy = 0.0;  // world frame
+  bool present = false;
 };
 
 // Current ego state in the track (map) frame. Velocities/accelerations are in the
@@ -60,6 +79,18 @@ struct FrenetState
   double proj_y = 0.0;
   double dir_x = 1.0;
   double dir_y = 0.0;
+};
+
+// Lateral (Frenet) info at a map point: signed lateral offset from the centerline
+// and the interpolated local half-widths. Used by the opponent obs block and the
+// detector corridor gate.
+struct LateralInfo
+{
+  double ey = 0.0;
+  double w_left = 0.0;
+  double w_right = 0.0;
+  double s = 0.0;
+  double L = 0.0;
 };
 
 struct TrackData
@@ -109,10 +140,16 @@ public:
 
   // Assemble the observation. Returns a vector of length cfg.num_obs (float to
   // match the Float32MultiArray wire format). Throws if the assembled size differs.
-  std::vector<float> build(const VehicleState & state) const;
+  // When cfg.enable_opponent_obs is set, the 7-dim opponent block is appended from
+  // `opp`; an absent opponent yields the exact zero sentinel.
+  std::vector<float> build(
+    const VehicleState & state, const OpponentState & opp = OpponentState{}) const;
 
   // Frenet projection of an arbitrary point (exposed for diagnostics / tests).
   FrenetState project(double px, double py) const;
+
+  // Signed lateral offset + interpolated half-widths at a map point.
+  LateralInfo lateral(double px, double py) const;
 
   int numCenterlinePoints() const { return n_; }
 
@@ -138,6 +175,108 @@ private:
   std::vector<double> ox_, oy_;
   std::vector<double> oseg_len_, ocumlen_;
   int n_ = 0;
+};
+
+// --- LiDAR opponent detection (ROS-free, unit-testable) ----------------------
+
+// Tuning for the LiDAR opponent detector. Distances in metres.
+struct DetectorConfig
+{
+  // Adjacent beam endpoints within this distance join the same cluster.
+  double cluster_gap_m = 0.30;
+  // Keep clusters whose endpoint-to-endpoint extent is within this band (an
+  // F1TENTH car footprint, projected at the observed range).
+  double min_opponent_size_m = 0.05;
+  double max_opponent_size_m = 1.00;
+  // Corridor gate: reject clusters whose centroid is closer to a track boundary
+  // than this margin (i.e. wall returns). |ey| < half_width - margin to survive.
+  double boundary_margin_m = 0.20;
+  // Foreground gate: a real car stands in front of its angular background, so the
+  // beams immediately flanking the cluster are either empty (free space) or at
+  // least this much farther from the ego than the cluster's near edge. A contiguous
+  // wall has a flanking return at a similar range and is rejected. <= 0 disables.
+  double foreground_jump_m = 0.30;
+  // Drop clusters whose near edge is farther than this from the ego (a single
+  // LiDAR cannot reliably localise a distant car). <= 0 disables.
+  double max_range_m = 10.0;
+  // Frame-to-frame association radius (centroid nearest neighbour).
+  double max_assoc_dist_m = 1.50;
+  // EMA factor on the estimated world-frame velocity (1.0 = no smoothing).
+  double vel_alpha = 0.50;
+  // A track must persist this many frames before it is reported present. This is
+  // the primary confirmation gate and works for stationary opponents.
+  int min_track_age_frames = 3;
+  // If > 0, a track moving at least this fast confirms immediately (fast-track).
+  // Never used to reject a slow / stationary track.
+  double min_speed_mps = 0.0;
+};
+
+// One LiDAR beam already transformed into the map frame. invalid beams (out of
+// range / non-finite) break cluster continuity.
+struct ScanPoint
+{
+  double x = 0.0;
+  double y = 0.0;
+  bool valid = false;
+};
+
+// Output of a detector update: the confirmed opponent estimate (map frame).
+struct DetectionResult
+{
+  bool present = false;
+  double pos_x = 0.0;
+  double pos_y = 0.0;
+  double vx = 0.0;  // world frame
+  double vy = 0.0;  // world frame
+};
+
+// A clustered candidate (exposed for tests).
+struct Cluster
+{
+  double cx = 0.0;
+  double cy = 0.0;
+  double extent = 0.0;
+  int count = 0;
+  int i0 = 0;  // first beam index (for the foreground gate)
+  int i1 = 0;  // last beam index
+};
+
+// Stateful single-opponent tracker. Clusters map-frame beams, gates them to the
+// drivable corridor, associates the best candidate across frames, and estimates a
+// smoothed world-frame velocity. Confirmation is persistence-based so a stationary
+// opponent is still reported (velocity ~ 0).
+class OpponentDetector
+{
+public:
+  OpponentDetector(const TrackObservationBuilder & track, const DetectorConfig & cfg);
+
+  // Process one scan (beams in beam order, map frame). ego_{x,y} is the ego map
+  // position (used to pick the nearest candidate when initialising a track).
+  DetectionResult update(
+    const std::vector<ScanPoint> & beams, double ego_x, double ego_y, double stamp);
+
+  // Cluster beams by adjacent-endpoint gap. Exposed for tests.
+  std::vector<Cluster> cluster(const std::vector<ScanPoint> & beams) const;
+
+  // Corridor + size gate on a candidate cluster. Exposed for tests.
+  bool inCorridor(const Cluster & c) const;
+
+  // Foreground / stand-out gate: true when the cluster sits in front of its
+  // angular background on both flanks (a real object, not a contiguous wall).
+  // Exposed for tests. ego_{x,y} is the LiDAR origin in the map frame.
+  bool standsOut(
+    const std::vector<ScanPoint> & beams, const Cluster & c,
+    double ego_x, double ego_y) const;
+
+private:
+  const TrackObservationBuilder & track_;
+  DetectorConfig cfg_;
+
+  bool has_track_ = false;
+  int age_ = 0;
+  double tx_ = 0.0, ty_ = 0.0;
+  double tvx_ = 0.0, tvy_ = 0.0;
+  double t_stamp_ = 0.0;
 };
 
 }  // namespace f1tenth_rl_vehicle

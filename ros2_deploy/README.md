@@ -104,7 +104,9 @@ SIM_NETWORK=dfr_f1tenth_gym_x11 CHECKPOINT_DIR=/abs/path/to/ckpts \
 
 Centerline CSVs are derived from `IV_2026_SIM_smooth.csv` in
 [dfr_f1tenth_gym dev-humble](https://github.com/RMin280/dfr_f1tenth_gym/tree/dev-humble)
-via `scripts/build_centerline_from_raceline.py` (671 points, 2.2 m width).
+via `scripts/build_centerline_from_raceline.py` (671 points). Corridor half-widths
+are **per vertex** from CSV columns `w_tr_left_m` / `w_tr_right_m` (~0.65–0.68 m
+each side, ~1.33 m total mean width — not a uniform 2.2 m band).
 
 **Note:** `ckpt_30000.pt` was trained on Oschersleben — retrain on IV 2026 before
 expecting competitive lap times on the new map.
@@ -169,6 +171,7 @@ car instead of the five sim nodes:
 | `vehicle_obs` | `f1tenth_rl_vehicle` | C++ | particle-filter pose + VESC twist + track CSV -> `/rl/observation` @ fixed 10 Hz |
 | `policy_inference` | `f1tenth_rl_agent` | Python | `/rl/observation` -> `/rl/action` (applies the checkpoint's `obs_norm`) |
 | `drive` | `f1tenth_rl_vehicle` | C++ | `/rl/action` -> `/drive` (Ackermann) with a stop watchdog |
+| `opponent_detector` | `f1tenth_rl_vehicle` | C++ | `/scan` + ego pose -> `/rl/opponent/odom` (1v1 only, `enable_opponent:=true`) |
 
 `vehicle_obs` merges the sim `track_server` + `observation_builder` (it loads the
 training centerline CSV directly), so there is no `/rl/track/*` plumbing on the car.
@@ -186,6 +189,79 @@ source install/setup.bash
 The C++ parity test (`test_rl_obs_core`) compares `rl_obs_core` against a fixture
 generated from the Python pipeline (`test/obs_fixture.txt`), guaranteeing the on-car
 observation equals the one the policy trained on within `1e-4`.
+
+## 1v1 opponent detection
+
+For head-to-head racing the car can detect the opponent from its LiDAR and feed the
+7-dim opponent block into the observation (the obs grows from 380 to **387** dims,
+matching a checkpoint trained with `enable_opponent_obs=true`). Enable it at launch:
+
+```bash
+ros2 launch f1tenth_rl_vehicle bringup_vehicle.launch.py \
+    checkpoint_path:=/abs/path/to/policy_1v1.pt \
+    enable_opponent:=true
+```
+
+This starts the extra `opponent_detector` node and sets `enable_opponent_obs` on both
+`vehicle_obs` and `policy_inference`. The detector:
+
+- clusters `/scan` returns, transforms them to the `map` frame using the ego pose and
+  a **static laser-mount offset** (`lidar_offset_{x,y,yaw}` in `config/vehicle.yaml`;
+  set these from your URDF -- no tf2 dependency), then
+- gates clusters to the drivable corridor (centerline + width CSV) to reject walls, and
+- tracks the surviving cluster across frames to estimate a world-frame velocity,
+  publishing the opponent as `nav_msgs/Odometry` on `/rl/opponent/odom`.
+
+Confirmation is persistence-based, so a **stationary opponent is still detected**
+(its reported velocity is ~0); motion is only used to fast-track confirmation, never
+to reject a slow/static track. The corridor gate assumes the drivable band is
+otherwise clear (no static cones/debris inside it). Tune the gating thresholds
+(`cluster_gap_m`, `min/max_opponent_size_m`, `boundary_margin_m`, ...) in
+`config/vehicle.yaml`.
+
+The opponent obs `[380:387]` is parity-checked against the training
+`obs_opponent`. Regenerate the fixture (in the venv/container with torch) when the
+observation math changes:
+
+```bash
+cd ros2_deploy/f1tenth_rl_vehicle/test
+PYTHONPATH=../../f1tenth_rl_agent python gen_obs_fixture.py \
+    ../../f1tenth_rl_agent/assets/IV_2026_SIM_centerline.csv obs_fixture.txt
+```
+
+### Validation in `f1tenth_gym_ros`
+
+The detector was validated against the live two-car `f1tenth_gym_ros` sim. The gym
+renders the opponent into the ego LiDAR, so it can be detected from `/scan` alone.
+Copy the package into the sim container, build, run the unit suite, then run the
+detector against the bridge topics (`/scan` + ground-truth ego pose `/ego_racecar/odom`)
+and compare `/rl/opponent/odom` to the ground-truth opponent pose `/opp_racecar/odom`:
+
+```bash
+# from ros2_deploy/, with the gym sim container running:
+docker cp f1tenth_rl_vehicle <sim_container>:/sim_ws/src/f1tenth_rl_vehicle
+docker exec <sim_container> bash -lc '
+  source /opt/ros/humble/setup.bash && cd /sim_ws &&
+  colcon build --packages-select f1tenth_rl_vehicle &&
+  colcon test --packages-select f1tenth_rl_vehicle --event-handlers console_direct+'
+
+# run the detector against the live sim:
+docker exec <sim_container> bash -lc '
+  source /opt/ros/humble/setup.bash && source /sim_ws/install/setup.bash &&
+  ros2 run f1tenth_rl_vehicle opponent_detector --ros-args \
+    -p track_csv:=/sim_ws/src/f1tenth_rl_agent/assets/IV_2026_SIM_centerline.csv \
+    -p scan_topic:=/scan -p pose_topic:=/ego_racecar/odom'
+# then: ros2 topic echo /rl/opponent/odom   (vs /opp_racecar/odom)
+```
+
+Measured against ground truth over a multi-lap race:
+
+- **Visible opponent** (in the front FoV, unoccluded): ~95% recall, ~0.5 m mean
+  position error.
+- **Occluded / behind** (around a corner, nothing valid in view): ~15%
+  false-positive rate after the corridor + foreground + range gates (down from ~55%
+  with the corridor gate alone). The consumer's `opponent_timeout_s` and the obs
+  presence flag absorb these brief spurious detections.
 
 ## Launch
 

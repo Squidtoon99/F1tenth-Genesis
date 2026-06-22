@@ -14,7 +14,12 @@
 
 #include "f1tenth_rl_vehicle/rl_obs_core.hpp"
 
+using f1tenth_rl_vehicle::DetectionResult;
+using f1tenth_rl_vehicle::DetectorConfig;
 using f1tenth_rl_vehicle::ObsConfig;
+using f1tenth_rl_vehicle::OpponentDetector;
+using f1tenth_rl_vehicle::OpponentState;
+using f1tenth_rl_vehicle::ScanPoint;
 using f1tenth_rl_vehicle::TrackObservationBuilder;
 using f1tenth_rl_vehicle::VehicleState;
 
@@ -86,6 +91,45 @@ TEST(RlObsCore, MatchesPythonFixture)
     }
   }
   EXPECT_LT(max_diff, 1e-4) << "max obs parity diff = " << max_diff;
+
+  // Opponent section (387-dim). Present only in fixtures regenerated after the
+  // opponent block was added; older fixtures simply skip this block.
+  int num_opp_cases = 0;
+  if (f >> num_opp_cases) {
+    ObsConfig ocfg = cfg;
+    ocfg.enable_opponent_obs = true;
+    ocfg.num_obs = 380 + ocfg.opponent_obs_dim;
+    TrackObservationBuilder opp_builder(xs, ys, wl, wr, ocfg);
+
+    double opp_max_diff = 0.0;
+    for (int c = 0; c < num_opp_cases; ++c) {
+      VehicleState st;
+      f >> st.pos_x >> st.pos_y >> st.yaw >> st.vx >> st.vy >> st.wz >> st.ax >>
+      st.ay >> st.last_throttle >> st.last_steer;
+      for (int i = 0; i < 8; ++i) {
+        f >> st.tyre_slip[i];
+      }
+      OpponentState opp;
+      double present = 0.0;
+      f >> opp.pos_x >> opp.pos_y >> opp.vx >> opp.vy >> present;
+      opp.present = present > 0.5;
+
+      std::vector<double> expected(ocfg.num_obs);
+      for (int i = 0; i < ocfg.num_obs; ++i) {
+        f >> expected[i];
+      }
+
+      std::vector<float> obs = opp_builder.build(st, opp);
+      ASSERT_EQ(static_cast<int>(obs.size()), ocfg.num_obs);
+      for (int i = 0; i < ocfg.num_obs; ++i) {
+        double d = std::abs(static_cast<double>(obs[i]) - expected[i]);
+        opp_max_diff = std::max(opp_max_diff, d);
+        EXPECT_LT(d, 1e-4) << "opp case " << c << " index " << i
+                           << " got " << obs[i] << " expected " << expected[i];
+      }
+    }
+    EXPECT_LT(opp_max_diff, 1e-4) << "max opponent obs parity diff = " << opp_max_diff;
+  }
 }
 
 TEST(RlObsCore, TyreSlipMatchesFormula)
@@ -106,6 +150,215 @@ TEST(RlObsCore, TyreSlipMatchesFormula)
   for (int i = 0; i < 4; ++i) {
     EXPECT_NEAR(slip2[i], -1.0, 1e-9);  // (0 - 2) / max(0, 2) = -1
   }
+}
+
+namespace
+{
+// A clean closed circle track (radius R) so Frenet projection is unambiguous,
+// unlike an open straight polyline whose auto-closing segment is degenerate.
+struct CircleTrack
+{
+  std::vector<double> xs, ys, wl, wr;
+};
+
+CircleTrack makeCircle(double radius, int num, double half_width)
+{
+  CircleTrack t;
+  for (int i = 0; i < num; ++i) {
+    const double th = 2.0 * M_PI * static_cast<double>(i) / num;
+    t.xs.push_back(radius * std::cos(th));
+    t.ys.push_back(radius * std::sin(th));
+    t.wl.push_back(half_width);
+    t.wr.push_back(half_width);
+  }
+  return t;
+}
+
+// A small cluster of beams (in beam order, map frame) around (cx, cy), spread
+// tangentially (+y) so it stays on the centerline of a circle centred at origin.
+std::vector<ScanPoint> blobBeams(double cx, double cy, int count, double spacing)
+{
+  std::vector<ScanPoint> beams;
+  const double y0 = cy - 0.5 * (count - 1) * spacing;
+  for (int i = 0; i < count; ++i) {
+    ScanPoint p;
+    p.x = cx;
+    p.y = y0 + i * spacing;
+    p.valid = true;
+    beams.push_back(p);
+  }
+  return beams;
+}
+}  // namespace
+
+TEST(OpponentObs, SentinelAndPresence)
+{
+  const CircleTrack t = makeCircle(20.0, 120, 1.5);
+  ObsConfig cfg;
+  cfg.enable_opponent_obs = true;
+  cfg.num_obs = 387;
+  TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
+
+  VehicleState st;
+  st.pos_x = 20.0;
+  st.pos_y = 0.0;
+  st.yaw = M_PI / 2.0;  // tangent at theta=0 points +y
+  st.vx = 3.0;
+
+  // Absent opponent -> the whole 7-dim block is the exact zero sentinel.
+  std::vector<float> obs_absent = builder.build(st, OpponentState{});
+  ASSERT_EQ(static_cast<int>(obs_absent.size()), 387);
+  for (int i = 380; i < 387; ++i) {
+    EXPECT_FLOAT_EQ(obs_absent[i], 0.0f) << "absent block index " << i;
+  }
+
+  // Present opponent slightly ahead (larger angle) -> presence flag set and the
+  // forward (ego-x) relative position is positive.
+  OpponentState opp;
+  opp.present = true;
+  const double th = 0.15;
+  opp.pos_x = 20.0 * std::cos(th);
+  opp.pos_y = 20.0 * std::sin(th);
+  std::vector<float> obs = builder.build(st, opp);
+  EXPECT_FLOAT_EQ(obs[386], 1.0f);            // presence flag
+  EXPECT_GT(obs[380], 0.0f);                  // rel_x: opponent ahead in ego frame
+  EXPECT_GT(obs[384], 0.0f);                  // gap_norm: opponent ahead along track
+}
+
+TEST(OpponentDetectorTest, Clustering)
+{
+  const CircleTrack t = makeCircle(20.0, 120, 1.5);
+  ObsConfig cfg;
+  TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
+  DetectorConfig dcfg;
+  OpponentDetector det(builder, dcfg);
+
+  std::vector<ScanPoint> beams;
+  // Group A: 4 points spaced 0.05.
+  for (int i = 0; i < 4; ++i) {
+    beams.push_back(ScanPoint{0.0, i * 0.05, true});
+  }
+  beams.push_back(ScanPoint{0.0, 0.0, false});  // invalid break
+  // Group B: 3 points, far from group A (> cluster_gap).
+  for (int i = 0; i < 3; ++i) {
+    beams.push_back(ScanPoint{5.0, i * 0.05, true});
+  }
+
+  auto clusters = det.cluster(beams);
+  ASSERT_EQ(clusters.size(), 2u);
+  EXPECT_EQ(clusters[0].count, 4);
+  EXPECT_EQ(clusters[1].count, 3);
+}
+
+TEST(OpponentDetectorTest, CorridorGateRejectsWall)
+{
+  const CircleTrack t = makeCircle(20.0, 120, 1.5);
+  ObsConfig cfg;
+  TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
+  DetectorConfig dcfg;
+  OpponentDetector det(builder, dcfg);
+
+  // On-centerline cluster (radius 20) is in the corridor.
+  auto on = det.cluster(blobBeams(20.0, 0.0, 5, 0.05));
+  ASSERT_EQ(on.size(), 1u);
+  EXPECT_TRUE(det.inCorridor(on[0]));
+
+  // Near-boundary cluster (radius ~21.4 -> |ey| ~1.4 > 1.5 - 0.2) is rejected.
+  auto wall = det.cluster(blobBeams(21.4, 0.0, 5, 0.05));
+  ASSERT_EQ(wall.size(), 1u);
+  EXPECT_FALSE(det.inCorridor(wall[0]));
+}
+
+TEST(OpponentDetectorTest, ForegroundGateRejectsContiguousWall)
+{
+  const CircleTrack t = makeCircle(20.0, 120, 1.5);
+  ObsConfig cfg;
+  TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
+  DetectorConfig dcfg;
+  dcfg.foreground_jump_m = 0.30;
+  dcfg.max_range_m = 0.0;  // isolate the foreground logic from the range gate
+  OpponentDetector det(builder, dcfg);
+
+  // A car blob 4 m ahead of an ego at the origin, flanked by empty (free-space)
+  // beams -> both flanks are background, so it stands out.
+  std::vector<ScanPoint> car;
+  car.push_back(ScanPoint{0.0, 0.0, false});
+  for (int i = 0; i < 5; ++i) {
+    car.push_back(ScanPoint{4.0, -0.1 + 0.05 * i, true});
+  }
+  car.push_back(ScanPoint{0.0, 0.0, false});
+  auto cc = det.cluster(car);
+  ASSERT_EQ(cc.size(), 1u);
+  EXPECT_TRUE(det.standsOut(car, cc[0], 0.0, 0.0));
+
+  // The same blob but flanked by returns at the *same* range (a contiguous wall
+  // surface that merely fragmented into car-sized pieces). The flanks are split
+  // from the body by a just-larger-than-cluster_gap gap, so it is its own cluster
+  // but does not stand out from its neighbours -> rejected.
+  std::vector<ScanPoint> wallframe;
+  wallframe.push_back(ScanPoint{4.0, -0.6, true});  // left flank (gap 0.45 > 0.30)
+  for (int i = 0; i < 5; ++i) {
+    wallframe.push_back(ScanPoint{4.0, -0.1 + 0.05 * i, true});
+  }
+  wallframe.push_back(ScanPoint{4.0, 0.6, true});   // right flank
+  auto wf = det.cluster(wallframe);
+  ASSERT_EQ(wf.size(), 3u);                          // body sits in the middle
+  EXPECT_FALSE(det.standsOut(wallframe, wf[1], 0.0, 0.0));
+}
+
+TEST(OpponentDetectorTest, StationaryOpponentConfirms)
+{
+  const CircleTrack t = makeCircle(20.0, 120, 1.5);
+  ObsConfig cfg;
+  TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
+  DetectorConfig dcfg;  // min_track_age_frames = 3, min_speed_mps = 0
+  dcfg.max_range_m = 0.0;  // synthetic blob sits 20 m out (radius-20 circle)
+  OpponentDetector det(builder, dcfg);
+
+  DetectionResult res;
+  for (int k = 0; k < 3; ++k) {
+    res = det.update(blobBeams(20.0, 0.0, 5, 0.05), 0.0, 0.0, 0.1 * k);
+  }
+  EXPECT_TRUE(res.present);             // confirmed despite zero motion
+  EXPECT_NEAR(res.vx, 0.0, 1e-6);
+  EXPECT_NEAR(res.vy, 0.0, 1e-6);
+  EXPECT_NEAR(res.pos_x, 20.0, 1e-6);
+  EXPECT_NEAR(res.pos_y, 0.0, 1e-6);
+}
+
+TEST(OpponentDetectorTest, MovingOpponentVelocity)
+{
+  const CircleTrack t = makeCircle(20.0, 120, 1.5);
+  ObsConfig cfg;
+  TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
+  DetectorConfig dcfg;
+  dcfg.vel_alpha = 1.0;  // no smoothing -> exact finite difference
+  dcfg.max_range_m = 0.0;  // synthetic blob sits 20 m out (radius-20 circle)
+  OpponentDetector det(builder, dcfg);
+
+  // Opponent drifts +y at 0.5 m/s (dy = 0.05 per dt = 0.1), staying near centerline.
+  DetectionResult res;
+  for (int k = 0; k < 4; ++k) {
+    res = det.update(blobBeams(20.0, 0.05 * k, 5, 0.05), 0.0, 0.0, 0.1 * k);
+  }
+  EXPECT_TRUE(res.present);
+  EXPECT_NEAR(res.vy, 0.5, 1e-3);
+  EXPECT_NEAR(res.vx, 0.0, 1e-3);
+}
+
+TEST(OpponentDetectorTest, WallNeverConfirms)
+{
+  const CircleTrack t = makeCircle(20.0, 120, 1.5);
+  ObsConfig cfg;
+  TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
+  DetectorConfig dcfg;
+  OpponentDetector det(builder, dcfg);
+
+  DetectionResult res;
+  for (int k = 0; k < 5; ++k) {
+    res = det.update(blobBeams(21.4, 0.0, 5, 0.05), 0.0, 0.0, 0.1 * k);
+  }
+  EXPECT_FALSE(res.present);
 }
 
 TEST(RlObsCore, MapActionToDrive)

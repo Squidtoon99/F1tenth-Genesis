@@ -248,7 +248,24 @@ FrenetState TrackObservationBuilder::project(double px, double py) const
   return fr;
 }
 
-std::vector<float> TrackObservationBuilder::build(const VehicleState & st) const
+LateralInfo TrackObservationBuilder::lateral(double px, double py) const
+{
+  const FrenetState fr = project(px, py);
+  LateralInfo info;
+  const double nx = -fr.dir_y;
+  const double ny = fr.dir_x;
+  info.ey = (px - fr.proj_x) * nx + (py - fr.proj_y) * ny;
+  const int i0 = fr.best_idx;
+  const int i1 = (nw_ > 0) ? (fr.best_idx + 1) % nw_ : fr.best_idx;
+  info.w_left = wl_[i0] + fr.best_t * (wl_[i1] - wl_[i0]);
+  info.w_right = wr_[i0] + fr.best_t * (wr_[i1] - wr_[i0]);
+  info.s = fr.s;
+  info.L = fr.L;
+  return info;
+}
+
+std::vector<float> TrackObservationBuilder::build(
+  const VehicleState & st, const OpponentState & opp) const
 {
   std::vector<float> obs(static_cast<size_t>(cfg_.num_obs), 0.0f);
   const FrenetState fr = project(st.pos_x, st.pos_y);
@@ -293,7 +310,8 @@ std::vector<float> TrackObservationBuilder::build(const VehicleState & st) const
   const int samples = cfg_.future_track_num_points;
   const double total = std::max(fr.L, 1e-6);
   const double speed = std::sqrt(st.vx * st.vx + st.vy * st.vy);
-  const double lookahead = speed * cfg_.future_track_horizon_s;
+  const double lookahead =
+    std::max(speed * cfg_.future_track_horizon_s, cfg_.future_track_min_lookahead_m);
   // future_track_width is deprecated: corridor edges use per-vertex CSV widths.
   const double cos_y = std::cos(st.yaw);
   const double sin_y = std::sin(st.yaw);
@@ -361,6 +379,49 @@ std::vector<float> TrackObservationBuilder::build(const VehicleState & st) const
     obs[slip_base + i] = static_cast<float>(st.tyre_slip[i]);
   }
 
+  // [380:387] opponent-relative block (port of f1tenth_env obs_opponent). Built
+  // in the ego body frame; zeroed (incl. presence flag) when the opponent is
+  // absent so the 1v0 sentinel is exactly zeros.
+  if (cfg_.enable_opponent_obs) {
+    const int opp_base = 380;
+    if (opp_base + cfg_.opponent_obs_dim <= cfg_.num_obs) {
+      const double present_f = opp.present ? 1.0 : 0.0;
+      // Ego world-frame velocity from body velocity + yaw (obs_opponent rotates
+      // the relative world velocity into the ego frame).
+      const double ego_vx_w = cos_y * st.vx - sin_y * st.vy;
+      const double ego_vy_w = sin_y * st.vx + cos_y * st.vy;
+
+      const double dx = opp.pos_x - st.pos_x;
+      const double dy = opp.pos_y - st.pos_y;
+      const double rel_x = cos_y * dx + sin_y * dy;
+      const double rel_y = -sin_y * dx + cos_y * dy;
+
+      const double dvx = opp.vx - ego_vx_w;
+      const double dvy = opp.vy - ego_vy_w;
+      const double rel_vx = cos_y * dvx + sin_y * dvy;
+      const double rel_vy = -sin_y * dvx + cos_y * dvy;
+
+      const LateralInfo opp_lat = lateral(opp.pos_x, opp.pos_y);
+      const double L = std::max(fr.L, 1e-6);
+      double gap = opp_lat.s - fr.s;
+      const double half = 0.5 * L;
+      if (gap > half) {
+        gap -= L;
+      } else if (gap < -half) {
+        gap += L;
+      }
+      const double gap_norm = gap / std::max(half, 1e-6);
+
+      obs[opp_base + 0] = static_cast<float>(rel_x * present_f);
+      obs[opp_base + 1] = static_cast<float>(rel_y * present_f);
+      obs[opp_base + 2] = static_cast<float>(rel_vx * present_f);
+      obs[opp_base + 3] = static_cast<float>(rel_vy * present_f);
+      obs[opp_base + 4] = static_cast<float>(gap_norm * present_f);
+      obs[opp_base + 5] = static_cast<float>(opp_lat.ey * present_f);
+      obs[opp_base + 6] = static_cast<float>(present_f);
+    }
+  }
+
   if (cfg_.clip_obs > 0.0) {
     float c = static_cast<float>(cfg_.clip_obs);
     for (auto & v : obs) {
@@ -368,6 +429,206 @@ std::vector<float> TrackObservationBuilder::build(const VehicleState & st) const
     }
   }
   return obs;
+}
+
+// --- OpponentDetector --------------------------------------------------------
+
+OpponentDetector::OpponentDetector(
+  const TrackObservationBuilder & track, const DetectorConfig & cfg)
+: track_(track), cfg_(cfg)
+{
+}
+
+std::vector<Cluster> OpponentDetector::cluster(const std::vector<ScanPoint> & beams) const
+{
+  std::vector<Cluster> out;
+  const int n = static_cast<int>(beams.size());
+  int i = 0;
+  while (i < n) {
+    if (!beams[i].valid) {
+      ++i;
+      continue;
+    }
+    const int start = i;
+    double sx = beams[i].x;
+    double sy = beams[i].y;
+    double prevx = beams[i].x;
+    double prevy = beams[i].y;
+    int count = 1;
+    int last = i;
+    int j = i + 1;
+    while (j < n && beams[j].valid) {
+      const double dx = beams[j].x - prevx;
+      const double dy = beams[j].y - prevy;
+      if (std::sqrt(dx * dx + dy * dy) > cfg_.cluster_gap_m) {
+        break;
+      }
+      sx += beams[j].x;
+      sy += beams[j].y;
+      prevx = beams[j].x;
+      prevy = beams[j].y;
+      ++count;
+      last = j;
+      ++j;
+    }
+    Cluster c;
+    c.count = count;
+    c.cx = sx / count;
+    c.cy = sy / count;
+    c.i0 = start;
+    c.i1 = last;
+    const double ex = beams[last].x - beams[start].x;
+    const double ey = beams[last].y - beams[start].y;
+    c.extent = std::sqrt(ex * ex + ey * ey);
+    out.push_back(c);
+    i = j;
+  }
+  return out;
+}
+
+bool OpponentDetector::inCorridor(const Cluster & c) const
+{
+  if (c.extent < cfg_.min_opponent_size_m || c.extent > cfg_.max_opponent_size_m) {
+    return false;
+  }
+  const LateralInfo lat = track_.lateral(c.cx, c.cy);
+  const double margin = cfg_.boundary_margin_m;
+  if (lat.ey > lat.w_left - margin) {
+    return false;
+  }
+  if (lat.ey < -lat.w_right + margin) {
+    return false;
+  }
+  return true;
+}
+
+bool OpponentDetector::standsOut(
+  const std::vector<ScanPoint> & beams, const Cluster & c,
+  double ego_x, double ego_y) const
+{
+  const int n = static_cast<int>(beams.size());
+  auto rng = [&](int i) {
+    const double dx = beams[i].x - ego_x;
+    const double dy = beams[i].y - ego_y;
+    return std::sqrt(dx * dx + dy * dy);
+  };
+
+  // Near edge of the cluster (closest return to the ego).
+  double r_near = std::numeric_limits<double>::infinity();
+  for (int i = c.i0; i <= c.i1 && i < n; ++i) {
+    if (beams[i].valid) {
+      r_near = std::min(r_near, rng(i));
+    }
+  }
+  if (!std::isfinite(r_near)) {
+    return false;
+  }
+  if (cfg_.max_range_m > 0.0 && r_near > cfg_.max_range_m) {
+    return false;
+  }
+  if (cfg_.foreground_jump_m <= 0.0) {
+    return true;
+  }
+
+  // A flank is "background" when the immediately adjacent beam is off the array,
+  // an empty return (free space), or a return well behind the cluster's near edge.
+  const int lp = c.i0 - 1;
+  const int rp = c.i1 + 1;
+  const bool left_bg =
+    lp < 0 || !beams[lp].valid || (rng(lp) - r_near) > cfg_.foreground_jump_m;
+  const bool right_bg =
+    rp >= n || !beams[rp].valid || (rng(rp) - r_near) > cfg_.foreground_jump_m;
+  return left_bg && right_bg;
+}
+
+DetectionResult OpponentDetector::update(
+  const std::vector<ScanPoint> & beams, double ego_x, double ego_y, double stamp)
+{
+  const std::vector<Cluster> clusters = cluster(beams);
+
+  std::vector<Cluster> cand;
+  for (const auto & c : clusters) {
+    if (inCorridor(c) && standsOut(beams, c, ego_x, ego_y)) {
+      cand.push_back(c);
+    }
+  }
+
+  DetectionResult res;
+  if (cand.empty()) {
+    has_track_ = false;
+    age_ = 0;
+    return res;
+  }
+
+  // Reference point for nearest-neighbour selection: predicted track position when
+  // tracking, else the ego (pick the nearest in-corridor obstacle to initialise).
+  double px_ref;
+  double py_ref;
+  const bool tracking = has_track_;
+  if (tracking) {
+    double dt_pred = stamp - t_stamp_;
+    if (dt_pred < 0.0) {
+      dt_pred = 0.0;
+    }
+    px_ref = tx_ + tvx_ * dt_pred;
+    py_ref = ty_ + tvy_ * dt_pred;
+  } else {
+    px_ref = ego_x;
+    py_ref = ego_y;
+  }
+
+  int best = 0;
+  double best_d2 = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < static_cast<int>(cand.size()); ++i) {
+    const double dx = cand[i].cx - px_ref;
+    const double dy = cand[i].cy - py_ref;
+    const double d2 = dx * dx + dy * dy;
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best = i;
+    }
+  }
+  const Cluster & pick = cand[best];
+
+  if (tracking && std::sqrt(best_d2) <= cfg_.max_assoc_dist_m) {
+    const double dt = stamp - t_stamp_;
+    if (dt > 1e-4) {
+      const double raw_vx = (pick.cx - tx_) / dt;
+      const double raw_vy = (pick.cy - ty_) / dt;
+      const double a = cfg_.vel_alpha;
+      tvx_ = a * raw_vx + (1.0 - a) * tvx_;
+      tvy_ = a * raw_vy + (1.0 - a) * tvy_;
+    }
+    tx_ = pick.cx;
+    ty_ = pick.cy;
+    t_stamp_ = stamp;
+    age_ += 1;
+  } else {
+    // (Re)initialise the track on the chosen candidate.
+    tx_ = pick.cx;
+    ty_ = pick.cy;
+    tvx_ = 0.0;
+    tvy_ = 0.0;
+    t_stamp_ = stamp;
+    has_track_ = true;
+    age_ = 1;
+  }
+
+  // Persistence-based confirmation (works for a stationary opponent). Motion only
+  // fast-tracks confirmation; it never rejects a slow / static track.
+  const double speed = std::sqrt(tvx_ * tvx_ + tvy_ * tvy_);
+  bool confirmed = age_ >= cfg_.min_track_age_frames;
+  if (!confirmed && cfg_.min_speed_mps > 0.0 && speed >= cfg_.min_speed_mps) {
+    confirmed = true;
+  }
+  if (confirmed) {
+    res.present = true;
+    res.pos_x = tx_;
+    res.pos_y = ty_;
+    res.vx = tvx_;
+    res.vy = tvy_;
+  }
+  return res;
 }
 
 }  // namespace f1tenth_rl_vehicle

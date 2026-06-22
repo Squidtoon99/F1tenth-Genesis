@@ -500,7 +500,14 @@ def accumulate_step_diagnostics(
             diag.add_mean(f"reward_term/{name}", value)
 
     metrics = extras.get("metrics", {})
-    for name in ("speed_xy", "lateral_error", "oob_mask", "progress_ds", "lap_count"):
+    for name in (
+        "speed_xy",
+        "lateral_error",
+        "oob_mask",
+        "progress_ds",
+        "lap_count",
+        "opp_speed",
+    ):
         value = metrics.get(name)
         if isinstance(value, torch.Tensor):
             diag.add_mean(f"metric/{name}", value)
@@ -1091,10 +1098,11 @@ def main():
                         mean_q,
                     )
                 log.info(
-                    "  env: speed=%.3f lat_err=%.3f oob_frac=%.3f progress_ds=%.4f "
-                    "lap_count=%.3f | throttle[%.2f..%.2f] steer[%.2f..%.2f] "
-                    "obs_absmax=%.2f norm_obs_absmax=%.2f",
+                    "  env: speed=%.3f opp_speed=%.3f lat_err=%.3f oob_frac=%.3f "
+                    "progress_ds=%.4f lap_count=%.3f | throttle[%.2f..%.2f] "
+                    "steer[%.2f..%.2f] obs_absmax=%.2f norm_obs_absmax=%.2f",
                     diag.mean("metric/speed_xy"),
+                    diag.mean("metric/opp_speed"),
                     diag.mean("metric/lateral_error"),
                     diag.mean("metric/oob_mask"),
                     diag.mean("metric/progress_ds"),

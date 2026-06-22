@@ -37,7 +37,7 @@ as intended.
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--opponent {none,scripted,policy}` | `none` | `none` = solo/1v0. `scripted` = centerline-following pace car (recommended). `policy` = frozen-policy self-play opponent (interface only; training loop deferred). |
+| `--opponent {none,scripted,policy}` | `none` | `none` = solo/1v0. `scripted` = centerline-following pace car (recommended). `policy` = frozen-policy opponent; use with `--self-play` for delayed snapshot self-play. |
 | `--opponent-target-speed FLOAT` | `3.0` | Scripted opponent target speed (m/s). Keep it **below** the ego's achievable pace so an overtake is feasible (too fast → the ego can never pass and `passing` never goes positive). |
 | `--opponent-spawn-gap FLOAT` | `7.0` | Meters the opponent spawns ahead of the ego along the centerline at every reset. Smaller = collisions/overtakes happen sooner; larger = more approach room. |
 | `--passing-scale FLOAT` | `0.5` | Reward scale on the passing term `k * (ego_ds - opp_ds)`. Positive when the ego gains track position. Raise it to push overtaking harder; lower it if it dominates clean-driving terms. Ignored when `--opponent none`. |
@@ -45,10 +45,10 @@ as intended.
 
 All the standard trainer flags still apply (`--num-envs`, `--total-steps`,
 `--batch-size`, `--alpha`, `--device`, `--precision`, `--seed`, `--wandb`, …). The
-underlying tunables (`opponent_kp_ey`, `opponent_kh_heading`, `collision_dist_m`,
-`term_on_collision`, `opponent_obs_dim`, `passing_k`) live in
-[config.py](../config.py) under the `env` / `obs` / `reward` sections and can be
-overridden there if needed.
+underlying tunables (`opponent_kp_ey`, `opponent_kh_heading`, `opponent_kp_speed`,
+`car_length`, `car_width`, `collision_margin_m`, `term_on_collision`,
+`opponent_obs_dim`, `passing_k`, `collision_k`) live in [config.py](../config.py)
+under the `env` / `obs` / `reward` sections and can be overridden there if needed.
 
 ## What changes under the hood
 
@@ -60,10 +60,12 @@ overridden there if needed.
 - **Reward**: a `passing` term `passing_k * (ego_ds - opp_ds)` (per-step arc-length
   deltas) is added. It is reset-safe and wrap-safe (no start/finish-line spikes) and
   is **gated** by the presence of the `passing` reward scale, so the solo reward is
-  byte-for-byte unchanged. There is intentionally no shaped collision penalty.
-- **Termination**: the episode ends when the two cars are within `collision_dist_m`
-  (default 0.4 m). This is the entire collision-handling story — ending the episode
-  forfeits future progress reward, which is the only "don't crash" signal needed.
+  byte-for-byte unchanged. A config-gated `collision` term (`collision_k` × overlap
+  mask) adds a negative reward on contact when enabled for 1v1 training.
+- **Termination**: the episode ends on car-to-car overlap detected by an anisotropic
+  ego-frame box using `car_length` (0.46 m), `car_width` (0.30 m), and optional
+  `collision_margin_m` (see `terminations.collision_mask`). Episode reset forfeits
+  future progress reward in addition to any configured collision penalty.
 
 ## Verify before a long run
 
@@ -92,17 +94,19 @@ Checkpoints are written to `outputs/standalone/<run_id>/ckpt_<step>.pt` with `ac
 `critic1`, `critic2`, and `obs_norm` (observation mean/var). A 1v1 checkpoint expects
 a **387-dim** observation at inference.
 
-The ROS port (`ros2_deploy/.../obs_core.py`) currently builds only the 380-dim base
-vector; deploying a 1v1 policy requires it to also emit the 7-dim opponent block from
-perception (with the same zero sentinel when no opponent is detected). The exact
-contract it must satisfy is documented in
-[observation_audit.md](observation_audit.md) under "1v1 opponent observation block".
+The ROS deploy stack supports both observation sizes: solo policies use 380 dims;
+1v1 policies use **387** dims when `enable_opponent_obs` is set (sim
+`observation_builder`, car `vehicle_obs`, and `policy_inference` all append the
+7-dim opponent block from `/rl/opponent/odom` or LiDAR detection). The exact
+contract is documented in [observation_audit.md](observation_audit.md) under
+"1v1 opponent observation block".
 
-## Future: self-play (`--opponent policy`)
+## Self-play (`--self-play`)
 
-The `PolicyOpponent` controller and `--opponent-ckpt` plumbing exist so a frozen
-policy can drive the opponent today. The self-play *training loop* — periodically
-snapshotting the learner into the opponent — is intentionally deferred; the
-checkpoint format above (`actor` + `obs_norm`) is already what `PolicyOpponent`
-loads, so wiring it up later needs no changes to the env or observation contract.
-The system is hard-limited to a single opponent (1v1); there is no multi-agent path.
+Delayed self-play is implemented in `standalone_trainer.py` via `SelfPlayManager`:
+the learner is snapshotted into a pool and the frozen `PolicyOpponent` is refreshed
+periodically. Enable with `--self-play` (implies `--opponent policy`); tune cadence
+with `--selfplay-snapshot-interval`, `--selfplay-refresh-interval`, and
+`--selfplay-pool-size`. Warm-start with `--init-ckpt` to seed both the learner and
+the opponent pool. The checkpoint format (`actor` + `obs_norm`) is what
+`PolicyOpponent` loads. The system is hard-limited to a single opponent (1v1).

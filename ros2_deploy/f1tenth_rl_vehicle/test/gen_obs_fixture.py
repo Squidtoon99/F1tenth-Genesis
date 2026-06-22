@@ -28,6 +28,11 @@ def yaw_to_quat_wxyz(yaw: float) -> torch.Tensor:
     return torch.tensor([[np.cos(half), 0.0, 0.0, np.sin(half)]], dtype=torch.float32)
 
 
+def _rot(yaw: float) -> np.ndarray:
+    c, s = np.cos(yaw), np.sin(yaw)
+    return np.array([[c, -s], [s, c]], dtype=np.float64)
+
+
 def main() -> None:
     csv_path = sys.argv[1]
     out_path = sys.argv[2]
@@ -76,6 +81,68 @@ def main() -> None:
             (pos[0], pos[1], yaw, vx, vy, wz, ax, ay, last_t, last_s, slip, obs_np)
         )
 
+    # --- 1v1 opponent-block cases (387-dim) ----------------------------------
+    # Built with the deployed build_opponent_block (pinned to training obs_opponent)
+    # so the C++ opponent block at [380:387] is verified for parity. The ego
+    # velocity is converted body->world here because the C++ build() reconstructs
+    # the ego world velocity from the body velocity + yaw.
+    opp_cfg = default_obs_cfg(enable_opponent_obs=True)
+    opp_builder = ObservationBuilder(
+        centerline, wl, wr, opp_cfg, device=torch.device("cpu")
+    )
+    opp_cases = []
+    for k in range(10):
+        ei = int(rng.integers(0, n))
+        eo = rng.uniform(-0.5, 0.5, size=2).astype(np.float64)
+        epos = np.array([centerline[ei, 0] + eo[0], centerline[ei, 1] + eo[1], 0.0])
+        eyaw = float(rng.uniform(-np.pi, np.pi))
+        evx = float(rng.uniform(-0.5, 6.0))
+        evy = float(rng.uniform(-1.0, 1.0))
+        wz = float(rng.uniform(-1.5, 1.5))
+        ax = float(rng.uniform(-3.0, 3.0))
+        ay = float(rng.uniform(-2.0, 2.0))
+        lt = float(rng.uniform(-1.0, 1.0))
+        ls = float(rng.uniform(-1.0, 1.0))
+        slip = rng.uniform(-0.5, 0.5, size=8).astype(np.float64)
+
+        oi = int(rng.integers(0, n))
+        oo = rng.uniform(-0.5, 0.5, size=2).astype(np.float64)
+        opos = np.array([centerline[oi, 0] + oo[0], centerline[oi, 1] + oo[1], 0.0])
+        # Some cases stationary (parity for the static-opponent path), some moving.
+        if k % 3 == 0:
+            ovx, ovy = 0.0, 0.0
+        else:
+            ovx = float(rng.uniform(-4.0, 4.0))
+            ovy = float(rng.uniform(-2.0, 2.0))
+        present = 0.0 if k % 4 == 3 else 1.0
+
+        ego_vel_world = _rot(eyaw) @ np.array([evx, evy], dtype=np.float64)
+        block = opp_builder.build_opponent_block(
+            ego_pos=torch.tensor([epos], dtype=torch.float32),
+            ego_yaw=torch.tensor([eyaw], dtype=torch.float32),
+            ego_vel_world=torch.tensor([ego_vel_world], dtype=torch.float32),
+            opp_pos=torch.tensor([opos], dtype=torch.float32),
+            opp_vel_world=torch.tensor([[ovx, ovy]], dtype=torch.float32),
+            present=torch.tensor([present], dtype=torch.float32),
+        )
+        obs = opp_builder.build(
+            base_lin_vel=torch.tensor([[evx, evy, 0.0]], dtype=torch.float32),
+            base_ang_vel=torch.tensor([[0.0, 0.0, wz]], dtype=torch.float32),
+            base_lin_acc=torch.tensor([[ax, ay, 0.0]], dtype=torch.float32),
+            last_actions=torch.tensor([[lt, ls]], dtype=torch.float32),
+            base_pos=torch.tensor([epos], dtype=torch.float32),
+            base_quat_wxyz=yaw_to_quat_wxyz(eyaw),
+            tyre_slip=torch.tensor([slip], dtype=torch.float32),
+            opponent_block=block,
+        )
+        obs_np = obs.squeeze(0).numpy().astype(np.float64)
+        opp_cases.append(
+            (
+                epos[0], epos[1], eyaw, evx, evy, wz, ax, ay, lt, ls, slip,
+                opos[0], opos[1], ovx, ovy, present, obs_np,
+            )
+        )
+
     with open(out_path, "w") as f:
         f.write(f"{n}\n")
         for i in range(n):
@@ -98,7 +165,20 @@ def main() -> None:
             f.write(" ".join(f"{v:.9g}" for v in state) + "\n")
             f.write(" ".join(f"{v:.9g}" for v in obs_np) + "\n")
 
-    print(f"wrote {out_path}: {n} track points, {len(cases)} cases")
+        # Opponent section (read conditionally by the C++ test).
+        f.write(f"{len(opp_cases)}\n")
+        for case in opp_cases:
+            (px, py, yaw, vx, vy, wz, ax, ay, lt, ls, slip,
+             opx, opy, ovx, ovy, present, obs_np) = case
+            state = [px, py, yaw, vx, vy, wz, ax, ay, lt, ls] + list(slip)
+            f.write(" ".join(f"{v:.9g}" for v in state) + "\n")
+            f.write(f"{opx:.9g} {opy:.9g} {ovx:.9g} {ovy:.9g} {present:.9g}\n")
+            f.write(" ".join(f"{v:.9g}" for v in obs_np) + "\n")
+
+    print(
+        f"wrote {out_path}: {n} track points, {len(cases)} solo cases, "
+        f"{len(opp_cases)} opponent cases"
+    )
 
 
 if __name__ == "__main__":
