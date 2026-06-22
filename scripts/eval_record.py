@@ -54,7 +54,7 @@ def load_actor_and_norm(ckpt_path: Path, cfg: dict, device: torch.device):
     )
     payload = torch.load(ckpt_path, map_location=device, weights_only=False)
     actor.load_state_dict(payload["actor"])
-    actor.to(device).eval()
+    actor.to(device=device, dtype=torch.float32).eval()
 
     mean = var = None
     if "obs_norm" in payload:
