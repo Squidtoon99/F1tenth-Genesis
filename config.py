@@ -154,6 +154,18 @@ DEFAULT_CONFIG = {
         "collision_margin_m": 0.0,
         # Deprecated: superseded by car_length/car_width/collision_margin_m.
         "collision_dist_m": 0.4,
+        # Per-episode domain randomization (disabled by default).
+        "domain_randomization": {
+            "enabled": False,
+            "tire_friction_range": [0.45, 0.85],
+            "ground_friction_range": [0.45, 0.85],
+            "vehicle_mass_range": [3.2, 4.2],
+            "mass_scale_range": [0.9, 1.1],
+            "action_latency_steps_range": [0, 2],
+            "obs_latency_steps_range": [0, 1],
+            "obs_noise_std_range": [0.0, 0.02],
+            "action_latency_steps_max": 3,
+        },
     },
     "reward": {
         # GT Sophy-aligned reward: course progress (primary), off-course penalty

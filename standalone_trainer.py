@@ -534,6 +534,12 @@ def build_config(args: argparse.Namespace) -> dict:
     if args.n_step is not None:
         cfg["model"]["n_step"] = args.n_step
 
+    if getattr(args, "domain_randomization", False):
+        cfg["env"]["domain_randomization"] = {
+            **DEFAULT_CONFIG["env"]["domain_randomization"],
+            "enabled": True,
+        }
+
     sp_defaults = DEFAULT_CONFIG["selfplay"]
     cfg["selfplay"] = {
         "snapshot_interval": args.selfplay_snapshot_interval,
@@ -688,6 +694,12 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Reward scale for the 1v1 passing term (track position gained on the "
         "opponent). Only used when --opponent is not 'none'.",
+    )
+    parser.add_argument(
+        "--domain-randomization",
+        action="store_true",
+        default=False,
+        help="Enable per-episode domain randomization (friction, mass, latency, obs noise).",
     )
     parser.add_argument(
         "--self-play",

@@ -102,7 +102,8 @@ def compute_wheel_torques(
     base_lin_vel_body: torch.Tensor,
     wheel_dof_vel: torch.Tensor,
     env_cfg: dict[str, Any],
-    vehicle_mass: float = 3.74,
+    vehicle_mass: float | torch.Tensor = 3.74,
+    tire_friction: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Per-wheel drive/brake torques (Nm) from force limits.
@@ -116,7 +117,15 @@ def compute_wheel_torques(
     wheel_radius = float(env_cfg.get("wheel_radius", WHEEL_RADIUS))
     k_front = float(env_cfg.get("k_drive_front", 0.5))
     v_eps = float(env_cfg.get("v_eps", 0.1))
-    mue = float(env_cfg.get("tire_friction", 0.7))
+    if tire_friction is None:
+        mue = torch.full(
+            (throttle_cmd.shape[0],),
+            float(env_cfg.get("tire_friction", 0.7)),
+            dtype=gs.tc_float,
+            device=throttle_cmd.device,
+        )
+    else:
+        mue = tire_friction.reshape(-1).to(dtype=gs.tc_float, device=throttle_cmd.device)
     c_roll = float(env_cfg.get("c_roll", 0.0))
     drive_sign = float(env_cfg.get("drive_torque_sign", 1.0))
 
@@ -125,10 +134,19 @@ def compute_wheel_torques(
 
     v_mag = torch.linalg.norm(base_lin_vel_body[:, :2], dim=-1)
 
-    traction_cap = mue * vehicle_mass * 9.81
+    if isinstance(vehicle_mass, torch.Tensor):
+        mass = vehicle_mass.reshape(-1).to(dtype=gs.tc_float, device=throttle_cmd.device)
+    else:
+        mass = torch.full(
+            (throttle_cmd.shape[0],),
+            float(vehicle_mass),
+            dtype=gs.tc_float,
+            device=throttle_cmd.device,
+        )
+    traction_cap = mue * mass * 9.81
     f_drive = throttle * f_drive_max
     f_drive = torch.minimum(f_drive, power_max / torch.clamp(v_mag, min=v_eps))
-    f_drive = torch.clamp(f_drive, max=traction_cap)
+    f_drive = torch.minimum(f_drive, traction_cap)
 
     f_front = k_front * f_drive
     f_rear = (1.0 - k_front) * f_drive

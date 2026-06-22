@@ -7,6 +7,14 @@ import genesis.utils.geom as gu
 import numpy as np
 import torch
 
+from .domain_randomization import (
+    apply_dr_physics,
+    apply_obs_dr,
+    dr_metrics,
+    init_dr_state,
+    latency_actions,
+    sample_dr_on_reset,
+)
 from .car import (
     URDF_PATH,
     ackermann_left_right,
@@ -104,6 +112,7 @@ class F1tenthEnv:
             ),
             rigid_options=gs.options.RigidOptions(
                 enable_self_collision=False,
+                batch_links_info=True,
                 constraint_solver=gs.constraint_solver.Newton,
                 # Genesis requires constraint_timeconst >= 2 * dt for a stable
                 # Newton solve; anything smaller can yield NaN constraint forces.
@@ -188,6 +197,27 @@ class F1tenthEnv:
         self.vehicle_mass = 3.74
         self.base_link_idx = self.car.get_link("base_link").idx
         self.base_link_idx_local = self.car.get_link("base_link").idx_local
+        self._dr_wheel_link_ids = [
+            self.car.get_link(name).idx_local
+            for name in (
+                "base_link",
+                "left_rear_wheel",
+                "right_rear_wheel",
+                "left_front_wheel",
+                "right_front_wheel",
+            )
+        ]
+        base_action_latency = 1 if self.simulate_action_latency else 0
+        self._dr = init_dr_state(
+            num_envs=self.num_envs,
+            env_cfg=self.env_cfg,
+            device=self.device,
+            num_actions=self.num_actions,
+            base_vehicle_mass=self.vehicle_mass,
+            base_tire_friction=float(self.env_cfg.get("tire_friction", 0.65)),
+            base_action_latency=base_action_latency,
+        )
+        self._dr["num_obs"] = self.num_obs
         self.root_dof_vel_idx = list(
             self.car.get_joint("root_joint").dofs_idx_local[3:6]
         )
@@ -584,6 +614,19 @@ class F1tenthEnv:
             for value in self.reward_state["episode_sums"].values():
                 value.masked_fill_(mask, 0.0)
 
+        sample_dr_on_reset(self._dr, mask, self.device)
+        if self._dr["enabled"]:
+            apply_dr_physics(
+                self.car,
+                self.opponent,
+                self._dr,
+                mask,
+                self._dr_wheel_link_ids,
+            )
+            if mask.any():
+                gf = float(self._dr["ground_friction"][mask].mean().item())
+                self.ground.set_friction(gf)
+
     def _apply_launch_velocity(
         self, mask: torch.Tensor, quat: torch.Tensor, speed: torch.Tensor
     ) -> None:
@@ -699,6 +742,7 @@ class F1tenthEnv:
             device=self.device,
             opponent_block=opponent_block,
         )
+        self.obs_buf = apply_obs_dr(self._dr, self.obs_buf)
 
     def _compute_rewards(self):
         step_state = self._get_step_state()
@@ -782,6 +826,7 @@ class F1tenthEnv:
             ).clamp_min(1e-6)
             opp_speed = (self.opp_vel_world[:, :2] * seg_dir).sum(dim=-1)
             self.extras["metrics"]["opp_speed"] = opp_speed
+        self.extras["metrics"].update(dr_metrics(self._dr))
 
     def _record_nonfinite_metrics(self) -> None:
         """Per-step counts of env rows with non-finite obs/reward/physics state."""
@@ -844,6 +889,7 @@ class F1tenthEnv:
 
         self._update_observation()
         self.extras["observations"]["critic"] = self.obs_buf
+        self.extras.setdefault("metrics", {}).update(dr_metrics(self._dr))
         return self.obs_buf, self.extras
 
     def _actuate_entity(
@@ -881,7 +927,8 @@ class F1tenthEnv:
             base_lin_vel_body=base_vel_body,
             wheel_dof_vel=wheel_dof_vel,
             env_cfg=self.env_cfg,
-            vehicle_mass=self.vehicle_mass,
+            vehicle_mass=self._dr["vehicle_mass"] * self._dr["mass_scale"],
+            tire_friction=self._dr["tire_friction"],
         )
 
         entity.control_dofs_force(wheel_torques.to(device=gs.device), self.wheel_dofs)
@@ -1069,9 +1116,7 @@ class F1tenthEnv:
             -self.env_cfg["clip_actions"],
             self.env_cfg["clip_actions"],
         )
-        exec_actions = (
-            self.last_actions if self.simulate_action_latency else self.actions
-        )
+        exec_actions = latency_actions(self._dr, self.actions)
 
         self._apply_actions(exec_actions)
         self._apply_opponent_actions()
