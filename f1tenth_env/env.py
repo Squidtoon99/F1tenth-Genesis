@@ -735,10 +735,7 @@ class F1tenthEnv:
             )
         )
 
-        # Collision termination (1v1): anisotropic ego-frame box overlap. This is
-        # the entire collision-handling story - there is no shaped collision
-        # penalty; ending the episode forfeits all future progress reward, which
-        # is a sufficient avoidance incentive.
+        # Collision termination (1v1): anisotropic ego-frame box overlap.
         if self.opponent is not None and bool(
             self.env_cfg.get("term_on_collision", True)
         ):
@@ -777,6 +774,14 @@ class F1tenthEnv:
             "episode_steps": self.episode_steps_buf.to(dtype=gs.tc_float),
             "lap_count": self.lap_count_buf.to(dtype=gs.tc_float),
         }
+        if self.opponent is not None:
+            opp_ss = self._opponent_step_state(self.opp_base_pos)
+            seg_dir = opp_ss["frenet"]["seg_dir"]
+            seg_dir = seg_dir / torch.linalg.norm(
+                seg_dir, dim=-1, keepdim=True
+            ).clamp_min(1e-6)
+            opp_speed = (self.opp_vel_world[:, :2] * seg_dir).sum(dim=-1)
+            self.extras["metrics"]["opp_speed"] = opp_speed
 
     def _normalize_reset_mask(self, envs_idx) -> torch.Tensor:
         """Coerce a None / index-list / index-tensor / bool-mask into a bool mask."""

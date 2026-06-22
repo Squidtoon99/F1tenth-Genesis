@@ -72,19 +72,24 @@ class ScriptedCenterlineOpponent(OpponentController):
     def __init__(self, env_cfg: dict[str, Any]):
         self.kp_ey = float(env_cfg.get("opponent_kp_ey", 1.0))
         self.kh_heading = float(env_cfg.get("opponent_kh_heading", 1.0))
+        self.kp_speed = float(env_cfg.get("opponent_kp_speed", 1.0))
+        self.target_speed = float(env_cfg.get("opponent_target_speed", 3.0))
         self.delta_max = float(
             env_cfg.get("delta_max", env_cfg.get("max_steer", 0.44))
         )
-        max_speed = max(float(env_cfg.get("max_speed", 15.0)), 1e-6)
-        target_speed = float(env_cfg.get("opponent_target_speed", 3.0))
-        self.throttle = float(min(max(target_speed / max_speed, 0.0), 1.0))
 
     def act(self, ctx: OpponentContext) -> torch.Tensor:
         frenet = ctx.step_state["frenet"]
         boundary = ctx.step_state["boundary"]
         ey = boundary["ey"].reshape(-1)
 
-        track_angle = torch.atan2(frenet["seg_dir"][:, 1], frenet["seg_dir"][:, 0])
+        seg_dir = frenet["seg_dir"]
+        seg_dir = seg_dir / torch.linalg.norm(seg_dir, dim=-1, keepdim=True).clamp_min(
+            1e-6
+        )
+        speed = (ctx.opp_vel[:, :2] * seg_dir).sum(dim=-1)
+
+        track_angle = torch.atan2(seg_dir[:, 1], seg_dir[:, 0])
         yaw = quat_to_xyz(ctx.opp_quat, rpy=True, degrees=False)[:, 2]
         heading_err = yaw - track_angle
         heading_err = torch.atan2(torch.sin(heading_err), torch.cos(heading_err))
@@ -93,7 +98,9 @@ class ScriptedCenterlineOpponent(OpponentController):
         steer = -(self.kp_ey * ey + self.kh_heading * heading_err) / delta_max
         steer = torch.clamp(steer, -1.0, 1.0)
 
-        throttle = torch.full_like(steer, self.throttle)
+        throttle = torch.clamp(
+            self.kp_speed * (self.target_speed - speed), -1.0, 1.0
+        )
         return torch.stack([throttle, steer], dim=-1)
 
 

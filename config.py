@@ -139,11 +139,12 @@ DEFAULT_CONFIG = {
         # or "policy" (frozen-policy self-play opponent; deferred training loop).
         "opponent_strategy": None,
         # Scripted opponent: centerline follower kept below ego pace so an overtake
-        # is feasible. target speed is in m/s; spawn gap is meters ahead of the ego.
-        "opponent_target_speed": 3.0,
+        # is feasible. Closed-loop P-control holds this setpoint in m/s.
+        "opponent_target_speed": 2.5,
         "opponent_spawn_gap_m": 7.0,
         "opponent_kp_ey": 1.0,
         "opponent_kh_heading": 1.0,
+        "opponent_kp_speed": 1.0,
         # Collision termination: anisotropic ego-frame box overlap (see
         # terminations.collision_mask). No shaped collision penalty (forfeited
         # progress is the avoidance incentive).
