@@ -1,0 +1,103 @@
+# Shared open-loop maneuver schedule for Genesis <-> IRL physics alignment.
+#
+# The SAME normalized [throttle, steer] actions are commanded to both the Genesis
+# sim and the real car. Achieved speeds will differ (that is exactly what we are
+# fitting away), so metrics are computed at the achieved speed and gated to the
+# per-maneuver fit_band. Anything outside the band is logged but never enters the
+# fit objective, which keeps low-speed IRL "crunching" out of Genesis.
+#
+# fit_band: [v_min, v_max] in m/s. A null upper bound means open-ended.
+# role: "warmup" gets the car up to speed; only "measure" samples are summarized.
+
+control_hz: 10.0
+
+maneuvers:
+  # --- Longitudinal -------------------------------------------------------------
+  - id: L1_accel
+    metric: accel
+    description: Full-throttle launch; fit the 3-8 m/s band and the drag plateau.
+    fit_band: [3.0, 8.0]
+    reset_before: true
+    segments:
+      - {throttle: 1.0, steer: 0.0, duration_s: 12.0, role: measure}
+
+  - id: L2_brake
+    metric: brake
+    description: Reach race speed then full brake; fit decel in the 2-4 m/s window.
+    fit_band: [2.0, 4.0]
+    reset_before: true
+    segments:
+      - {throttle: 1.0, steer: 0.0, duration_s: 4.0, role: warmup}
+      - {throttle: -1.0, steer: 0.0, duration_s: 4.0, role: measure}
+
+  - id: L3_coast
+    metric: coast
+    description: Diagnostic only - coast decay; low-speed tail excluded from fit.
+    fit_band: [3.0, null]
+    reset_before: true
+    diagnostic_only: true
+    segments:
+      - {throttle: 1.0, steer: 0.0, duration_s: 4.0, role: warmup}
+      - {throttle: 0.0, steer: 0.0, duration_s: 6.0, role: measure}
+
+  # --- Steady-state cornering ---------------------------------------------------
+  - id: S1_corner_025
+    metric: corner
+    description: Cruise + mild steer; turn radius / yaw rate / lateral accel.
+    fit_band: [3.0, null]
+    reset_before: true
+    segments:
+      - {throttle: 0.6, steer: 0.0, duration_s: 3.0, role: warmup}
+      - {throttle: 0.6, steer: 0.25, duration_s: 5.0, role: measure}
+
+  - id: S1_corner_050
+    metric: corner
+    fit_band: [3.0, null]
+    reset_before: true
+    segments:
+      - {throttle: 0.6, steer: 0.0, duration_s: 3.0, role: warmup}
+      - {throttle: 0.6, steer: 0.5, duration_s: 5.0, role: measure}
+
+  - id: S1_corner_075
+    metric: corner
+    fit_band: [3.0, null]
+    reset_before: true
+    segments:
+      - {throttle: 0.6, steer: 0.0, duration_s: 3.0, role: warmup}
+      - {throttle: 0.6, steer: 0.75, duration_s: 5.0, role: measure}
+
+  - id: S1_corner_100
+    metric: corner
+    fit_band: [3.0, null]
+    reset_before: true
+    segments:
+      - {throttle: 0.6, steer: 0.0, duration_s: 3.0, role: warmup}
+      - {throttle: 0.6, steer: 1.0, duration_s: 5.0, role: measure}
+
+  # --- Steering step response ---------------------------------------------------
+  - id: S2_steer_step
+    metric: steer_step
+    description: Step steer at cruise; first-order steering lag time constant.
+    fit_band: [3.0, null]
+    reset_before: true
+    segments:
+      - {throttle: 0.6, steer: 0.0, duration_s: 4.0, role: warmup}
+      - {throttle: 0.6, steer: 0.5, duration_s: 4.0, role: measure}
+
+  # --- Speed-dependent cornering ------------------------------------------------
+  - id: S3_corner_t06
+    metric: corner
+    description: Cornering at higher cruise throttle (speed-dependent grip).
+    fit_band: [3.0, null]
+    reset_before: true
+    segments:
+      - {throttle: 0.6, steer: 0.0, duration_s: 3.0, role: warmup}
+      - {throttle: 0.6, steer: 0.5, duration_s: 5.0, role: measure}
+
+  - id: S3_corner_t10
+    metric: corner
+    fit_band: [3.0, null]
+    reset_before: true
+    segments:
+      - {throttle: 1.0, steer: 0.0, duration_s: 3.0, role: warmup}
+      - {throttle: 1.0, steer: 0.5, duration_s: 5.0, role: measure}

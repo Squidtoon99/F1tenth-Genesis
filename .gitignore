@@ -36,3 +36,6 @@ scripts/logs
 venv/
 .testvenv/
 .verifyvenv/
+
+# calibration run artifacts (CSVs, bags, plots, fitted params)
+vehicle_calibration/runs/

@@ -83,8 +83,10 @@ DEFAULT_CONFIG = {
         "sim_dt": 0.005,
         # Tuned via scripts/sweep_physics_integration.py: substep counts 2..10 pass
         # the physics_check stability gate for normal upright driving. Finer substeps
-        # (effective 1.25 ms with sim_dt=0.005) help car-car contact stability in 1v1.
-        "sim_substeps": 4,
+        # (effective 0.625 ms with sim_dt=0.005) help car-car contact stability in
+        # 1v1; raised 4->8 after high-speed contacts into a near-stationary self-play
+        # opponent produced constraint-force NaNs at high env counts.
+        "sim_substeps": 8,
         # Softer constraint solve window; must stay >= 2 * sim_dt (Genesis Newton gate).
         "constraint_timeconst": 0.02,
         "solver_iterations": 50,

@@ -35,6 +35,7 @@ Sim deploy parity and on-car validation path.
 | Tyre-slip deploy parity | 60% | `--zero-tyre-slip-obs` ablates `[372:380]` in training (#7); on-car estimator deferred |
 | Real-track centerline | 0% | No surveyed map aligned to PF frame (#9) |
 | Solo IRL shakedown | 0% | No staged hardware run, bags, or lap logs (#10) |
+| Physics sim-to-real alignment | 35% | Tooling in `vehicle_calibration/` (#12); needs on-car maneuver bags to fit |
 
 ---
 
@@ -54,6 +55,7 @@ Sim deploy parity and on-car validation path.
 | Opponent detector uncommitted | Deploy | **RESOLVED** (#8) | Node committed (`ad2c8e3`); gym validation harness PASS on IV_2026_SIM |
 | Real-track mapping | Deploy | **OPEN** (#9) | No aligned centerline CSV for physical track |
 | Solo IRL shakedown | Deploy | **OPEN** (#10) | Hardware milestone not started |
+| Physics sim-to-real alignment | Deploy | **PARTIAL** (#12) | `vehicle_calibration/` open-loop profiler, rosbag parser, high-speed-gated fitter, and policy-lap compare built + smoke-tested; awaiting on-car maneuver bags |
 | Per-point track width docs | Hygiene | **RESOLVED** (#11) | IV_2026 CSV ~1.33 m mean total width from `w_tr_left`/`w_tr_right` |
 
 ---
@@ -74,8 +76,41 @@ Critical path (from plan):
 10. ~~**#5 Domain randomization**~~ — friction/mass/latency/obs noise **DONE**
 11. ~~**#7 Tyre-slip parity**~~ — training ablate via `zero_tyre_slip_obs` (on-car estimator deferred)
 12. ~~**#6 NaN soak**~~ — metric + long 1v1 contact test **DONE**
+13. **#12 Physics sim-to-real alignment** — tooling **DONE** in `vehicle_calibration/`;
+    next: collect on-car open-loop maneuver bags, run `fit`, merge fitted params
+    into `config.py`, then clean retrain on aligned physics.
 
-Parallel: #5 and #6 can run alongside retrains.
+Parallel: #5 and #6 can run alongside retrains. #12 open-loop profiling can run in
+any open carpet area in parallel with #9 (it does not need the aligned map).
+
+---
+
+## Physics sim-to-real alignment (#12)
+
+The `vehicle_calibration/` package drives Genesis and the real car through one
+shared open-loop maneuver schedule (`maneuvers/carpet_profile.yaml`), then fits
+Genesis physics to the car in the **high-speed racing band only**. Low-speed IRL
+"crunching" (VESC cogging / stiction / crawl) is excluded from the fit via a hard
+`v_fit_min` speed gate (default 2.5 m/s); `c_roll`, stiction, and speed-tracking
+lag are deliberately kept out of the search space.
+
+Workflow (see `vehicle_calibration/README.md`):
+
+1. `profile genesis` — in-sim baseline (validated; full suite replays end-to-end).
+2. `profile irl` + `ros/profile_maneuver_node.py` — scripted `/rl/action` on the
+   car (no checkpoint), recorded with `ros2 bag record`.
+3. `parse bag` — rosbag2 -> aligned 10 Hz CSV with the same schema as Genesis.
+4. `compare` — per-maneuver overlays (sub-`v_fit_min` shaded out-of-fit) and a
+   fit-band diff table in `alignment_report.json`.
+5. `fit` — subprocess-isolated search over `f_drive_max, dragcoeff, power_max,
+   f_brake_max, tire_friction, t_delta`, re-checked against `physics_check.py`.
+6. `lap-compare` — closed-loop policy-lap validation gated to v >= 3 m/s (after
+   the #9 map gate).
+
+**Remaining (hardware-gated):** collect the on-car maneuver bags, run `fit` to
+produce `runs/<id>/fitted_env.json`, merge those values into `config.py["env"]`
+(or a carpet overlay), and retrain on the aligned physics. The `config.py`
+defaults are intentionally left unchanged until real fitted values exist.
 
 ---
 

@@ -63,6 +63,30 @@ def generate_launch_description():
         description="Enable LiDAR opponent detection + the 387-dim 1v1 observation.",
     )
 
+    # Optional open-loop calibration profiler (vehicle_calibration package). When
+    # enabled it OWNS /rl/action, so policy_inference must not run at the same time.
+    # profiler_script defaults to $F1TENTH_REPO/vehicle_calibration/ros/... ; set the
+    # env var or pass profiler_script:=/abs/path on the car.
+    enable_profiler = LaunchConfiguration("enable_profiler")
+    profiler_script = LaunchConfiguration("profiler_script")
+    default_profiler_script = os.path.join(
+        os.environ.get("F1TENTH_REPO", ""),
+        "vehicle_calibration",
+        "ros",
+        "profile_maneuver_node.py",
+    )
+    declare_enable_profiler = DeclareLaunchArgument(
+        "enable_profiler",
+        default_value="false",
+        description="Run the open-loop maneuver profiler instead of policy_inference.",
+    )
+    declare_profiler_script = DeclareLaunchArgument(
+        "profiler_script",
+        default_value=default_profiler_script,
+        description="Absolute path to vehicle_calibration/ros/profile_maneuver_node.py.",
+    )
+    run_policy = PythonExpression(["'", enable_profiler, "' != 'true'"])
+
     nodes = [
         Node(
             package="f1tenth_rl_vehicle",
@@ -86,6 +110,14 @@ def generate_launch_description():
                 },
             ],
             output="screen",
+            condition=IfCondition(run_policy),
+        ),
+        Node(
+            executable="python3",
+            arguments=[profiler_script],
+            name="profile_maneuver",
+            output="screen",
+            condition=IfCondition(enable_profiler),
         ),
         Node(
             package="f1tenth_rl_vehicle",
@@ -111,6 +143,8 @@ def generate_launch_description():
             declare_ckpt,
             declare_track,
             declare_opponent,
+            declare_enable_profiler,
+            declare_profiler_script,
             *nodes,
         ]
     )
