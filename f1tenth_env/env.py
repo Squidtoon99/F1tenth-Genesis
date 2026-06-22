@@ -817,6 +817,10 @@ class F1tenthEnv:
             "speed_xy": speed_xy,
             "episode_steps": self.episode_steps_buf.to(dtype=gs.tc_float),
             "lap_count": self.lap_count_buf.to(dtype=gs.tc_float),
+            "laps_completed": self.reward_state.get(
+                "last_lap_cross",
+                torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device),
+            ).to(dtype=gs.tc_float),
         }
         if self.opponent is not None:
             opp_ss = self._opponent_step_state(self.opp_base_pos)

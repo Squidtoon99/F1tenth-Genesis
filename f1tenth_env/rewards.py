@@ -67,6 +67,9 @@ def ensure_progress_delta(
         (~reset_mask) & (prev_s_flat > 0.9 * length) & (s < 0.1 * length) & (ds > 0.0)
     )
     lap_count_buf += lap_cross.to(dtype=lap_count_buf.dtype)
+    # Per-step lap-completion events (independent of target_laps) so the trainer can
+    # log an actual completion count instead of the step-averaged lap_count level.
+    reward_state["last_lap_cross"] = lap_cross.detach()
 
     reward_state["prev_s"] = s.detach().clone()
     reward_state["prev_step_counter"] = step_now.detach().clone()

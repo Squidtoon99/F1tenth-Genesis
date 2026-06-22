@@ -510,6 +510,7 @@ def accumulate_step_diagnostics(
         "oob_mask",
         "progress_ds",
         "lap_count",
+        "laps_completed",
         "opp_speed",
         "nonfinite_obs_envs",
         "nonfinite_reward_envs",
@@ -517,7 +518,7 @@ def accumulate_step_diagnostics(
     ):
         value = metrics.get(name)
         if isinstance(value, torch.Tensor):
-            if name.startswith("nonfinite_"):
+            if name.startswith("nonfinite_") or name == "laps_completed":
                 diag.add_total(f"metric/{name}", value)
             else:
                 diag.add_mean(f"metric/{name}", value)
@@ -1190,14 +1191,14 @@ def main():
                     )
                 log.info(
                     "  env: speed=%.3f opp_speed=%.3f lat_err=%.3f oob_frac=%.3f "
-                    "progress_ds=%.4f lap_count=%.3f | throttle[%.2f..%.2f] "
+                    "progress_ds=%.4f laps_completed=%d | throttle[%.2f..%.2f] "
                     "steer[%.2f..%.2f] obs_absmax=%.2f norm_obs_absmax=%.2f",
                     diag.mean("metric/speed_xy"),
                     diag.mean("metric/opp_speed"),
                     diag.mean("metric/lateral_error"),
                     diag.mean("metric/oob_mask"),
                     diag.mean("metric/progress_ds"),
-                    diag.mean("metric/lap_count"),
+                    int(diag.total("metric/laps_completed")),
                     diag.vmin("action/throttle"),
                     diag.vmax("action/throttle"),
                     diag.vmin("action/steer"),
@@ -1284,6 +1285,7 @@ def main():
                             "env/oob_frac": diag.mean("metric/oob_mask"),
                             "env/progress_ds": diag.mean("metric/progress_ds"),
                             "env/lap_count": diag.mean("metric/lap_count"),
+                            "env/laps_completed": diag.total("metric/laps_completed"),
                             "action/throttle_max": diag.vmax("action/throttle"),
                             "action/steer_max": diag.vmax("action/steer"),
                             "obs/absmax": diag.vmax("obs/abs"),
