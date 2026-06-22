@@ -507,10 +507,16 @@ def accumulate_step_diagnostics(
         "progress_ds",
         "lap_count",
         "opp_speed",
+        "nonfinite_obs_envs",
+        "nonfinite_reward_envs",
+        "nonfinite_state_envs",
     ):
         value = metrics.get(name)
         if isinstance(value, torch.Tensor):
-            diag.add_mean(f"metric/{name}", value)
+            if name.startswith("nonfinite_"):
+                diag.add_total(f"metric/{name}", value)
+            else:
+                diag.add_mean(f"metric/{name}", value)
 
     for name, value in extras.get("termination", {}).items():
         if isinstance(value, torch.Tensor):
@@ -903,6 +909,9 @@ def main():
         while global_step < args.total_steps:
             bad_obs_mask = (~torch.isfinite(obs)).any(dim=1)
             if bad_obs_mask.any():
+                diag.add_total(
+                    "nonfinite/pre_step_obs_resets", bad_obs_mask.to(torch.float32)
+                )
                 reset_obs, _ = env.reset(envs_idx=bad_obs_mask)
                 obs = obs.clone()
                 obs[bad_obs_mask] = reset_obs[bad_obs_mask].to(torch.float32)
@@ -932,6 +941,7 @@ def main():
             except gs.GenesisException as exc:
                 consecutive_nan_steps += 1
                 total_nan_resets += 1
+                diag.add_total("nonfinite/genesis_exceptions", torch.ones((), device=device))
                 log.warning(
                     "Genesis raised at step %d (NaN constraint forces): %s. "
                     "Resetting envs (consecutive=%d total=%d).",
@@ -992,6 +1002,14 @@ def main():
             else:
                 n_bad_reward = int((~torch.isfinite(reward)).sum().item())
                 n_bad_obs_envs = int(bad_obs_mask.sum().item())
+                diag.add_total(
+                    "nonfinite/post_step_obs_bad",
+                    bad_obs_mask.to(torch.float32),
+                )
+                diag.add_total(
+                    "nonfinite/post_step_reward_bad",
+                    (~torch.isfinite(reward)).to(torch.float32),
+                )
                 log.warning(
                     "Non-finite step at %d (reward_bad=%d obs_bad_envs=%d); "
                     "skipping buffer add.",
@@ -1065,6 +1083,14 @@ def main():
                     if buffer.size > 0
                     else float("nan")
                 )
+                window_env_steps = float(args.log_interval * args.num_envs)
+                nf_obs_rate = diag.total("metric/nonfinite_obs_envs") / window_env_steps
+                nf_reward_rate = (
+                    diag.total("metric/nonfinite_reward_envs") / window_env_steps
+                )
+                nf_state_rate = (
+                    diag.total("metric/nonfinite_state_envs") / window_env_steps
+                )
 
                 if use_1v1:
                     log.info(
@@ -1113,6 +1139,17 @@ def main():
                     diag.vmax("action/steer"),
                     diag.vmax("obs/abs"),
                     diag.vmax("obs/norm_abs"),
+                )
+                log.info(
+                    "  nonfinite: obs_rate=%.2e reward_rate=%.2e state_rate=%.2e "
+                    "genesis_exc=%d pre_obs_reset=%d post_obs_bad=%d post_reward_bad=%d",
+                    nf_obs_rate,
+                    nf_reward_rate,
+                    nf_state_rate,
+                    int(diag.total("nonfinite/genesis_exceptions")),
+                    int(diag.total("nonfinite/pre_step_obs_resets")),
+                    int(diag.total("nonfinite/post_step_obs_bad")),
+                    int(diag.total("nonfinite/post_step_reward_bad")),
                 )
                 if use_1v1:
                     log.info(
@@ -1190,6 +1227,21 @@ def main():
                             "term/not_moving": diag.total("term/not_moving"),
                             "term/invalid_state": diag.total("term/invalid_state"),
                             "term/lap_finished": diag.total("term/lap_finished"),
+                            "nonfinite/obs_rate": nf_obs_rate,
+                            "nonfinite/reward_rate": nf_reward_rate,
+                            "nonfinite/state_rate": nf_state_rate,
+                            "nonfinite/genesis_exceptions": diag.total(
+                                "nonfinite/genesis_exceptions"
+                            ),
+                            "nonfinite/pre_step_obs_resets": diag.total(
+                                "nonfinite/pre_step_obs_resets"
+                            ),
+                            "nonfinite/post_step_obs_bad": diag.total(
+                                "nonfinite/post_step_obs_bad"
+                            ),
+                            "nonfinite/post_step_reward_bad": diag.total(
+                                "nonfinite/post_step_reward_bad"
+                            ),
                         },
                         step=global_step,
                     )

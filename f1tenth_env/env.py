@@ -783,6 +783,27 @@ class F1tenthEnv:
             opp_speed = (self.opp_vel_world[:, :2] * seg_dir).sum(dim=-1)
             self.extras["metrics"]["opp_speed"] = opp_speed
 
+    def _record_nonfinite_metrics(self) -> None:
+        """Per-step counts of env rows with non-finite obs/reward/physics state."""
+        nf_obs = (~torch.isfinite(self.obs_buf)).any(dim=1)
+        nf_reward = ~torch.isfinite(self.reward_buf)
+        nf_state = ~(
+            torch.isfinite(self.base_pos).all(dim=1)
+            & torch.isfinite(self.base_quat).all(dim=1)
+            & torch.isfinite(self.base_lin_vel).all(dim=1)
+            & torch.isfinite(self.base_ang_vel).all(dim=1)
+        )
+        if self.opponent is not None:
+            nf_state = nf_state | ~(
+                torch.isfinite(self.opp_base_pos).all(dim=1)
+                & torch.isfinite(self.opp_base_quat).all(dim=1)
+            )
+        self.extras["metrics"]["nonfinite_obs_envs"] = nf_obs.to(dtype=gs.tc_float)
+        self.extras["metrics"]["nonfinite_reward_envs"] = nf_reward.to(
+            dtype=gs.tc_float
+        )
+        self.extras["metrics"]["nonfinite_state_envs"] = nf_state.to(dtype=gs.tc_float)
+
     def _normalize_reset_mask(self, envs_idx) -> torch.Tensor:
         """Coerce a None / index-list / index-tensor / bool-mask into a bool mask."""
         if envs_idx is None:
@@ -1081,6 +1102,7 @@ class F1tenthEnv:
         self.reset(done)
 
         self.last_actions.copy_(self.actions)
+        self._record_nonfinite_metrics()
         return self.obs_buf, self.reward_buf, done, self.extras
 
     def close(self):
