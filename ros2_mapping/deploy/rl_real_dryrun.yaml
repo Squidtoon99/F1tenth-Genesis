@@ -1,0 +1,67 @@
+# Dry-run params: full stack, drive speed capped at 0.
+vehicle_obs:
+  ros__parameters:
+    track_csv: "/home/shereef/maps/f1tenth_map_centerline.csv"
+    control_hz: 10.0
+    pose_topic: "/pf/pose/odom"
+    twist_topic: "/odom"
+    twist_in_world_frame: false
+    num_obs: 387
+    enable_opponent_obs: true
+    opponent_odom_topic: "/rl/opponent/odom"
+    opponent_timeout_s: 0.5
+    future_track_num_points: 60
+    future_track_horizon_s: 6.0
+    future_track_min_lookahead_m: 5.0
+    contact_margin_m: 0.08
+    clip_obs: 50.0
+    # tyre-slip estimation under validation (no motion in dry-run)
+    enable_slip_estimation: true
+    imu_topic: "/sensors/imu/raw"
+    imu_accel_to_ms2: 9.80665
+    imu_gyro_to_rads: 0.017453293
+    imu_ay_sign: 1.0
+    imu_yaw_rate_sign: 1.0
+    imu_use_for_yaw_rate: true
+    wheel_radius_m: 0.05
+    lf_m: 0.165
+    lr_m: 0.165
+    track_width_m: 0.24
+    max_steer_rad: 0.44
+    slip_eps: 0.1
+    vy_filter_tau_s: 0.5
+    vx_ground_lp_alpha: 0.5
+    slip_speed_min_mps: 0.3
+    slip_obs_mean: [-0.033, -0.034, 0.969, 0.970, -0.011, -0.006, -0.113, -0.030]
+
+opponent_detector:
+  ros__parameters:
+    track_csv: "/home/shereef/maps/f1tenth_map_centerline.csv"
+    scan_topic: "/scan"
+    pose_topic: "/pf/pose/odom"
+    opponent_odom_topic: "/rl/opponent/odom"
+    frame_id: "map"
+    lidar_offset_x: 0.27
+    lidar_offset_y: 0.0
+    lidar_offset_yaw: 0.0
+    cluster_gap_m: 0.30
+    min_opponent_size_m: 0.08
+    max_opponent_size_m: 0.90
+    boundary_margin_m: 0.25
+    foreground_jump_m: 0.30
+    max_range_m: 8.0
+    max_assoc_dist_m: 1.50
+    min_track_age_frames: 4
+    min_speed_mps: 0.0
+
+drive:
+  ros__parameters:
+    max_speed: 15.0
+    max_steer: 0.44
+    clip_actions: 1.0
+    speed_limit_mps: 0.0
+    min_speed_mps: 0.0
+    watchdog_timeout_s: 0.5
+    brake_behavior: "stop"
+    drive_topic: "/drive"
+    action_topic: "/rl/action"

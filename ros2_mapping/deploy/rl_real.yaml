@@ -1,0 +1,82 @@
+# Real-track 1v1 RL deploy overrides (used with bringup_vehicle.launch.py).
+# Paths are on the car under /home/shereef.
+
+vehicle_obs:
+  ros__parameters:
+    track_csv: "/home/shereef/maps/f1tenth_map_centerline.csv"
+    control_hz: 10.0
+    pose_topic: "/pf/pose/odom"
+    twist_topic: "/odom"
+    twist_in_world_frame: false
+    num_obs: 387
+    enable_opponent_obs: true
+    opponent_odom_topic: "/rl/opponent/odom"
+    opponent_timeout_s: 0.5
+    future_track_num_points: 60
+    future_track_horizon_s: 6.0
+    future_track_min_lookahead_m: 5.0
+    contact_margin_m: 0.08
+    clip_obs: 50.0
+    # --- tyre-slip estimation (IMU + PF). Calibrate signs/scales with the
+    # validation pass (push car by hand, watch obs[372:380]) before trusting. ---
+    enable_slip_estimation: true
+    imu_topic: "/sensors/imu/raw"
+    imu_accel_to_ms2: 9.80665      # VESC reports accel in g
+    imu_gyro_to_rads: 0.017453293  # VESC reports gyro in deg/s
+    imu_ay_sign: 1.0               # flip if lateral accel sign is inverted
+    imu_yaw_rate_sign: 1.0         # flip if yaw-rate sign is inverted
+    imu_use_for_yaw_rate: true
+    wheel_radius_m: 0.05
+    lf_m: 0.165
+    lr_m: 0.165
+    track_width_m: 0.24
+    max_steer_rad: 0.44
+    slip_eps: 0.1
+    vy_filter_tau_s: 0.5
+    vx_ground_lp_alpha: 0.5
+    slip_speed_min_mps: 0.3
+    # checkpoint obs_norm means for [slip_ratio x4, slip_angle x4]
+    slip_obs_mean: [-0.033, -0.034, 0.969, 0.970, -0.011, -0.006, -0.113, -0.030]
+
+opponent_detector:
+  ros__parameters:
+    track_csv: "/home/shereef/maps/f1tenth_map_centerline.csv"
+    scan_topic: "/scan"
+    pose_topic: "/pf/pose/odom"
+    opponent_odom_topic: "/rl/opponent/odom"
+    frame_id: "map"
+    # static base_link -> laser from bringup_nogap_launch.py
+    lidar_offset_x: 0.27
+    lidar_offset_y: 0.0
+    lidar_offset_yaw: 0.0
+    cluster_gap_m: 0.30
+    min_opponent_size_m: 0.08
+    max_opponent_size_m: 0.90
+    boundary_margin_m: 0.25
+    foreground_jump_m: 0.30
+    max_range_m: 8.0
+    max_assoc_dist_m: 1.50
+    min_track_age_frames: 4
+    min_speed_mps: 0.0
+
+drive:
+  ros__parameters:
+    max_speed: 15.0
+    max_steer: 0.44
+    clip_actions: 1.0
+    speed_limit_mps: 2.0
+    min_speed_mps: 1.0
+    watchdog_timeout_s: 0.5
+    brake_behavior: "stop"
+    drive_topic: "/drive"
+    action_topic: "/rl/action"
+
+policy_inference:
+  ros__parameters:
+    checkpoint_path: "/home/shereef/checkpoints/ckpt_500000.pt"
+    state_dict_key: "actor"
+    device: "cpu"
+    deterministic: true
+    norm_clip: 10.0
+    norm_eps: 1.0e-8
+    enable_opponent_obs: true
