@@ -55,11 +55,18 @@ public:
       declare_parameter<std::string>("obs_topic", "/rl/observation");
     twist_in_world_frame_ = declare_parameter<bool>("twist_in_world_frame", false);
 
+    enable_opponent_obs_ = declare_parameter<bool>("enable_opponent_obs", false);
+    const std::string opp_odom_topic =
+      declare_parameter<std::string>("opponent_odom_topic", "/rl/opponent/odom");
+    opponent_timeout_s_ = declare_parameter<double>("opponent_timeout_s", 0.5);
+
     ObsConfig cfg;
     cfg.num_obs = static_cast<int>(declare_parameter<int>("num_obs", 380));
     cfg.future_track_num_points =
       static_cast<int>(declare_parameter<int>("future_track_num_points", 60));
     cfg.future_track_horizon_s = declare_parameter<double>("future_track_horizon_s", 6.0);
+    cfg.future_track_min_lookahead_m =
+      declare_parameter<double>("future_track_min_lookahead_m", 5.0);
     cfg.future_track_width = declare_parameter<double>("future_track_width", 2.2);
     cfg.contact_margin_m = declare_parameter<double>("contact_margin_m", 0.08);
     cfg.clip_obs = declare_parameter<double>("clip_obs", 50.0);
@@ -67,6 +74,13 @@ public:
     cfg.ang_vel_scale = declare_parameter<double>("ang_vel_scale", 1.0);
     cfg.lin_acc_scale = declare_parameter<double>("lin_acc_scale", 1.0);
     const int coarse_stride = static_cast<int>(declare_parameter<int>("coarse_stride", 10));
+
+    // 1v1: append the 7-dim opponent block. If num_obs was left at the solo
+    // default, bump it to the 1v1 size so the assembled vector matches the policy.
+    cfg.enable_opponent_obs = enable_opponent_obs_;
+    if (enable_opponent_obs_ && cfg.num_obs < 380 + cfg.opponent_obs_dim) {
+      cfg.num_obs = 380 + cfg.opponent_obs_dim;
+    }
 
     if (track_csv.empty()) {
       throw std::runtime_error("vehicle_obs: 'track_csv' parameter is required");
@@ -89,6 +103,11 @@ public:
     action_sub_ = create_subscription<std_msgs::msg::Float32MultiArray>(
       action_topic, 10,
       [this](std_msgs::msg::Float32MultiArray::SharedPtr msg) {this->onAction(*msg);});
+    if (enable_opponent_obs_) {
+      opp_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+        opp_odom_topic, 10,
+        [this](nav_msgs::msg::Odometry::SharedPtr msg) {this->onOpponent(*msg);});
+    }
 
     const double period = (control_hz_ > 0.0) ? 1.0 / control_hz_ : 0.1;
     timer_ = create_wall_timer(
@@ -120,6 +139,16 @@ private:
       last_throttle_ = msg.data[0];
       last_steer_ = msg.data[1];
     }
+  }
+
+  void onOpponent(const nav_msgs::msg::Odometry & msg)
+  {
+    opp_x_ = msg.pose.pose.position.x;
+    opp_y_ = msg.pose.pose.position.y;
+    opp_vx_ = msg.twist.twist.linear.x;  // world frame
+    opp_vy_ = msg.twist.twist.linear.y;
+    opp_stamp_ = now();
+    have_opp_ = true;
   }
 
   void onTimer()
@@ -164,7 +193,19 @@ private:
     st.last_steer = last_steer_;
     // tyre_slip defaults to zeros (no per-wheel sensing on the car).
 
-    std::vector<float> obs = builder_->build(st);
+    OpponentState opp;
+    if (enable_opponent_obs_ && have_opp_) {
+      const double age = (now() - opp_stamp_).seconds();
+      if (age <= opponent_timeout_s_) {
+        opp.present = true;
+        opp.pos_x = opp_x_;
+        opp.pos_y = opp_y_;
+        opp.vx = opp_vx_;
+        opp.vy = opp_vy_;
+      }
+    }
+
+    std::vector<float> obs = builder_->build(st, opp);
     std_msgs::msg::Float32MultiArray out;
     out.data = std::move(obs);
     obs_pub_->publish(out);
@@ -175,10 +216,17 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr pose_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr twist_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr action_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr opp_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   double control_hz_ = 10.0;
   bool twist_in_world_frame_ = false;
+
+  bool enable_opponent_obs_ = false;
+  double opponent_timeout_s_ = 0.5;
+  bool have_opp_ = false;
+  double opp_x_ = 0.0, opp_y_ = 0.0, opp_vx_ = 0.0, opp_vy_ = 0.0;
+  rclcpp::Time opp_stamp_{0, 0, RCL_ROS_TIME};
 
   bool have_pose_ = false;
   bool have_twist_ = false;

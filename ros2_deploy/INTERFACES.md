@@ -63,6 +63,20 @@ All topic names and array layouts are mirrored in code in
 | `12:372` | future track points: center/left/right x 60 pts x 2D, **ego frame** | centerline |
 | `372:380` | tyre slip `[slip_ratio x4, slip_angle x4]` | **zeros in gym deploy** (no wheel state in f1tenth_gym_ros) |
 
+When the 1v1 opponent observation is enabled (`enable_opponent_obs`), a 7-dim block
+is appended and `data` length becomes **387**:
+
+| Index | Field | Source |
+| --- | --- | --- |
+| `380:382` | opponent position relative to ego, **ego body frame** `(x, y)` (m) | opponent detect/odom |
+| `382:384` | opponent velocity relative to ego, **ego body frame** `(vx, vy)` (m/s) | opponent detect/odom |
+| `384` | signed along-track gap `s_opp - s_ego` wrapped to `[-L/2, L/2]`, normalized by `L/2` | Frenet |
+| `385` | opponent signed lateral offset `ey_opp` (m) | Frenet |
+| `386` | presence flag (`1.0` present, else `0.0`) | opponent detect/odom |
+
+The whole block (including the presence flag) is the exact zero sentinel when the
+opponent is absent. This matches `f1tenth_env.observations.obs_opponent`.
+
 - The env-side scales are now `1.0` and the assembled observation is loosely clipped
   to `[-50, 50]` (`clip_obs` in training config). Per-feature standardization is done
   by the trainer's `ObsNormalizer`; `policy_inference_node` applies the checkpoint's
@@ -80,10 +94,21 @@ All topic names and array layouts are mirrored in code in
 ### `/rl/metrics` - `std_msgs/Float32MultiArray`
 - `data` length **6**: `[lap_count, last_lap_time_s, max_progress_ratio, lateral_error_m, oob_flag, speed_mps]`.
 
+### `/rl/opponent/odom` - `nav_msgs/Odometry`
+- Frame `map`. Published by the real-car `opponent_detector` (LiDAR detection) when a
+  confirmed opponent is tracked. `pose.pose.position.{x,y}` is the opponent centroid;
+  `twist.twist.linear.{x,y}` is the **world-frame** velocity (≈0 for a stationary
+  opponent). Consumed by `vehicle_obs` (real car) / `observation_builder` (sim) to
+  fill the `[380:387]` opponent block. Absence is signalled by silence + a consumer
+  timeout (`opponent_timeout_s`), not by a separate flag.
+
+### `/rl/opponent/marker` - `visualization_msgs/Marker`
+- Frame `map`. A sphere at the detected opponent position for Foxglove (debug only).
+
 ## Observation / action constants (from `config.py` DEFAULT_CONFIG)
 
 - `num_obs = 380`, `num_actions = 2`
 - `max_speed = 15.0` m/s, `max_steer = 0.44` rad, `clip_actions = 1.0`
 - `contact_margin_m = 0.08`
-- `future_track_num_points = 60`, `future_track_horizon_s = 6.0`, `future_track_width = 2.2`
+- `future_track_num_points = 60`, `future_track_horizon_s = 6.0`, `future_track_min_lookahead_m = 5.0`, `future_track_width = 2.2`
 - hidden layers `[512, 512, 512]`, activation ReLU, `act_limit = 1.0`

@@ -16,6 +16,8 @@ find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(ackermann_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 # --- core observation library -------------------------------------------------
 add_library(rl_obs_core src/rl_obs_core.cpp)
@@ -32,7 +34,11 @@ add_executable(drive src/drive_node.cpp)
 target_link_libraries(drive rl_obs_core)
 ament_target_dependencies(drive rclcpp ackermann_msgs std_msgs)
 
-install(TARGETS vehicle_obs drive
+add_executable(opponent_detector src/opponent_detector_node.cpp)
+target_link_libraries(opponent_detector rl_obs_core)
+ament_target_dependencies(opponent_detector rclcpp nav_msgs sensor_msgs visualization_msgs)
+
+install(TARGETS vehicle_obs drive opponent_detector
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY config launch
