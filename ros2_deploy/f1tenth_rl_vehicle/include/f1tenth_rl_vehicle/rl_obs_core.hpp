@@ -36,6 +36,9 @@ struct ObsConfig
   // (num_obs becomes 387). Off by default to preserve the solo deploy.
   bool enable_opponent_obs = false;
   int opponent_obs_dim = 7;
+  // Force [380:387] to zeros (1v0 sentinel) even when enable_opponent_obs is
+  // true, so a 387-dim checkpoint can run without a working opponent detector.
+  bool zero_opponent_obs = false;
 };
 
 // Opponent estimate in the map frame. Velocity is world-frame (the obs block

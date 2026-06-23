@@ -121,8 +121,14 @@ DEFAULT_CONFIG = {
         },
         # Observation/reset throttle scaling only — longitudinal cap comes from power+drag.
         "max_speed": 15.0,
-        "max_steer": 0.44,  # radians (alias for delta_max)
-        "delta_max": 0.44,  # radians
+        # Real F1TENTH servo hard-clamps the steering at ~0.33 rad (19 deg): see
+        # analysis/analyze_full_lock.py, which measures a ~0.94 m min turning radius
+        # from rosbags (servo saturates at 0.85 -> 0.33 rad effective wheel angle).
+        # Training at 0.44 rad let the policy assume an unreachable 0.70 m radius and
+        # understeer into walls on tight corners; 0.33 rad makes the sim match reality
+        # (0.325 / tan(0.33) = 0.95 m min radius).
+        "max_steer": 0.33,  # radians (alias for delta_max)
+        "delta_max": 0.33,  # radians
         "wheelbase": 0.325,
         "track_width": 0.20,
         "wheel_radius": 0.05,
@@ -151,8 +157,9 @@ DEFAULT_CONFIG = {
         "opponent_kh_heading": 1.0,
         "opponent_kp_speed": 1.0,
         # Collision termination: anisotropic ego-frame box overlap (see
-        # terminations.collision_mask). No shaped collision penalty (forfeited
-        # progress is the avoidance incentive).
+        # terminations.collision_mask). An optional shaped GT Sophy any-collision
+        # penalty (collision_k, gated by a "collision" reward scale) adds a dense
+        # per-step signal on top of the forfeited progress from episode reset.
         "term_on_collision": True,
         "car_length": 0.46,
         "car_width": 0.30,
@@ -192,6 +199,11 @@ DEFAULT_CONFIG = {
         # entry is added to reward_scales (the trainer does this for 1v1), so 1v0 is
         # unaffected.
         "passing_k": 5.0,
+        # GT Sophy any-collision penalty gain: per-step reward = -collision_k on
+        # car-to-car overlap (same predicate as collision termination). Only active
+        # when a "collision" entry is added to reward_scales (the trainer does this
+        # for 1v1), so 1v0 is unaffected.
+        "collision_k": 5.0,
         # Global downscale applied to the summed reward to keep per-step total and
         # value targets O(1) (progress alone was ~9/step before). Preserves the
         # relative balance between the individual reward terms.

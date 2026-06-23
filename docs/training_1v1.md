@@ -41,6 +41,7 @@ as intended.
 | `--opponent-target-speed FLOAT` | `3.0` | Scripted opponent target speed (m/s). Keep it **below** the ego's achievable pace so an overtake is feasible (too fast → the ego can never pass and `passing` never goes positive). |
 | `--opponent-spawn-gap FLOAT` | `7.0` | Meters the opponent spawns ahead of the ego along the centerline at every reset. Smaller = collisions/overtakes happen sooner; larger = more approach room. |
 | `--passing-scale FLOAT` | `0.5` | Reward scale on the passing term `k * (ego_ds - opp_ds)`. Positive when the ego gains track position. Raise it to push overtaking harder; lower it if it dominates clean-driving terms. Ignored when `--opponent none`. |
+| `--collision-scale FLOAT` | `1.0` | Reward scale on the GT Sophy any-collision term `Rc = -collision_k` (binary, per-step penalty on car-car box overlap, regardless of fault). Not rear-end (`Rr`) or unsporting (`Ruc`) shaping. Ignored when `--opponent none`. |
 | `--opponent-ckpt PATH` | `None` | Only for `--opponent policy`: the frozen actor checkpoint to drive the opponent. |
 
 All the standard trainer flags still apply (`--num-envs`, `--total-steps`,

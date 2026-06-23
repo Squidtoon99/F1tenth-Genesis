@@ -575,6 +575,8 @@ def build_config(args: argparse.Namespace) -> dict:
         cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
         # Activate the passing reward term (gated by presence of this scale).
         cfg["reward"]["reward_scales"]["passing"] = args.passing_scale
+        # Activate the GT Sophy any-collision penalty (gated by this scale).
+        cfg["reward"]["reward_scales"]["collision"] = args.collision_scale
         # Car-car contacts need a slightly softer / better-resolved constraint solve.
         cfg["env"]["solver_iterations"] = max(
             int(cfg["env"].get("solver_iterations", 50)), 80
@@ -720,6 +722,13 @@ def parse_args() -> argparse.Namespace:
         "opponent). Only used when --opponent is not 'none'.",
     )
     parser.add_argument(
+        "--collision-scale",
+        type=float,
+        default=1.0,
+        help="Reward scale for the GT Sophy any-collision penalty (-collision_k on "
+        "car-car overlap). Only used when --opponent is not 'none'.",
+    )
+    parser.add_argument(
         "--zero-tyre-slip-obs",
         action="store_true",
         default=False,
@@ -797,7 +806,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--buffer-capacity", type=int, default=100_000)
     parser.add_argument("--log-interval", type=int, default=100)
-    parser.add_argument("--wandb", action="store_true", default=False)
+    parser.add_argument(
+        "--wandb",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Log metrics to Weights & Biases (default: on; use --no-wandb to disable).",
+    )
     parser.add_argument(
         "--wandb-mode",
         type=str,
@@ -1161,13 +1175,14 @@ def main():
                 if use_1v1:
                     log.info(
                         "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
-                        "progress=%.4f passing=%.4f oob_penalty=%.4f tyre_slip=%.4f "
-                        "smooth=%.4f | nstep_buf_reward=%.4f mean_Q=%.4f",
+                        "progress=%.4f passing=%.4f collision=%.4f oob_penalty=%.4f "
+                        "tyre_slip=%.4f smooth=%.4f | nstep_buf_reward=%.4f mean_Q=%.4f",
                         diag.mean("reward/step"),
                         diag.vmin("reward/step"),
                         diag.vmax("reward/step"),
                         diag.mean("reward_term/progress"),
                         diag.mean("reward_term/passing"),
+                        diag.mean("reward_term/collision"),
                         diag.mean("reward_term/oob_penalty"),
                         diag.mean("reward_term/tyre_slip_penalty"),
                         diag.mean("reward_term/smoothness"),
@@ -1271,6 +1286,9 @@ def main():
                             "reward/total_min": diag.vmin("reward/step"),
                             "reward/total_max": diag.vmax("reward/step"),
                             "reward/progress": diag.mean("reward_term/progress"),
+                            "reward/collision": diag.mean(
+                                "reward_term/collision"
+                            ),
                             "reward/oob_penalty": diag.mean(
                                 "reward_term/oob_penalty"
                             ),

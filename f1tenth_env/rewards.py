@@ -181,6 +181,22 @@ def reward_passing(
     return k * (ego_ds - opp_ds)
 
 
+def reward_collision(
+    step_state: dict[str, Any], reward_cfg: dict[str, Any]
+) -> torch.Tensor:
+    """GT Sophy any-collision penalty ``Rc = -k * c`` for car-to-car contact.
+
+    ``c`` is the binary overlap indicator (the same ego-frame box predicate used
+    for collision termination). The penalty fires on every step the cars overlap,
+    regardless of fault. Returns zeros when no opponent is present.
+    """
+    mask = step_state.get("car_collision")
+    if mask is None:
+        return torch.zeros_like(step_state["progress_ds"])
+    k = float(reward_cfg.get("collision_k", 5.0))
+    return -k * mask.to(dtype=step_state["progress_ds"].dtype)
+
+
 def reward_progress(
     step_state: dict[str, Any], reward_cfg: dict[str, Any]
 ) -> torch.Tensor:
@@ -322,6 +338,11 @@ def compute_rewards(
             step_state, reward_cfg, reward_state, episode_steps_buf
         )
 
+    # 1v1 collision penalty (gated like passing): GT Sophy any-collision term.
+    collision_enabled = "collision" in scales
+    if collision_enabled:
+        collision = reward_collision(step_state, reward_cfg)
+
     # GT Sophy masks course progress whenever the agent is off course (anti
     # corner-cutting). Derive the mask directly from the boundary state: the
     # off-course penalty is ~v^2 and goes to zero at low speed, so it can no longer
@@ -344,6 +365,8 @@ def compute_rewards(
     smoothness_penalty *= scales.get("smoothness", 0.0)
     if passing_enabled:
         passing *= scales["passing"]
+    if collision_enabled:
+        collision *= scales["collision"]
 
     # Single global knob to shrink overall reward magnitude (keeps the relative
     # balance between terms intact) so returns / critic targets stay O(1).
@@ -355,6 +378,8 @@ def compute_rewards(
     smoothness_penalty *= global_scale
     if passing_enabled:
         passing *= global_scale
+    if collision_enabled:
+        collision *= global_scale
 
     last_terms: dict[str, torch.Tensor] = {
         "progress": progress.clone(),
@@ -368,6 +393,9 @@ def compute_rewards(
     if passing_enabled:
         reward_buf += passing
         last_terms["passing"] = passing.clone()
+    if collision_enabled:
+        reward_buf += collision
+        last_terms["collision"] = collision.clone()
 
     reward_state["last_reward_terms"] = last_terms
     return reward_buf, step_state

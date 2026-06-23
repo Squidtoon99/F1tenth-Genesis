@@ -33,9 +33,7 @@ def generate_launch_description():
     checkpoint_path = LaunchConfiguration("checkpoint_path")
     track_csv = LaunchConfiguration("track_csv")
     enable_opponent = LaunchConfiguration("enable_opponent")
-    # Bool literal for ROS parameter overrides (LaunchConfiguration resolves to a
-    # string; pass the Python bool so YAML/ROS sees a real boolean).
-    enable_opponent_bool = PythonExpression(["'", enable_opponent, "' == 'true'"])
+    enable_obs_debug = LaunchConfiguration("enable_obs_debug")
 
     declare_params = DeclareLaunchArgument(
         "params_file",
@@ -60,7 +58,12 @@ def generate_launch_description():
     declare_opponent = DeclareLaunchArgument(
         "enable_opponent",
         default_value="false",
-        description="Enable LiDAR opponent detection + the 387-dim 1v1 observation.",
+        description="Launch LiDAR opponent_detector (requires enable_opponent_obs in YAML).",
+    )
+    declare_obs_debug = DeclareLaunchArgument(
+        "enable_obs_debug",
+        default_value="true",
+        description="Launch the read-only obs_debug node (scalars + markers for diagnosis).",
     )
 
     # Optional open-loop calibration profiler (vehicle_calibration package). When
@@ -94,7 +97,7 @@ def generate_launch_description():
             name="vehicle_obs",
             parameters=[
                 params_file,
-                {"track_csv": track_csv, "enable_opponent_obs": enable_opponent_bool},
+                {"track_csv": track_csv},
             ],
             output="screen",
         ),
@@ -104,10 +107,7 @@ def generate_launch_description():
             name="policy_inference",
             parameters=[
                 agent_params_file,
-                {
-                    "checkpoint_path": checkpoint_path,
-                    "enable_opponent_obs": enable_opponent_bool,
-                },
+                {"checkpoint_path": checkpoint_path},
             ],
             output="screen",
             condition=IfCondition(run_policy),
@@ -134,6 +134,14 @@ def generate_launch_description():
             output="screen",
             condition=IfCondition(enable_opponent),
         ),
+        Node(
+            package="f1tenth_rl_agent",
+            executable="obs_debug",
+            name="obs_debug",
+            parameters=[agent_params_file],
+            output="screen",
+            condition=IfCondition(enable_obs_debug),
+        ),
     ]
 
     return LaunchDescription(
@@ -143,6 +151,7 @@ def generate_launch_description():
             declare_ckpt,
             declare_track,
             declare_opponent,
+            declare_obs_debug,
             declare_enable_profiler,
             declare_profiler_script,
             *nodes,

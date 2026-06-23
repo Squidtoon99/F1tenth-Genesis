@@ -1,0 +1,3 @@
+# Raw rosbag captures (binary, large) and local caches — keep analysis scripts only
+bags/
+.mplcache/

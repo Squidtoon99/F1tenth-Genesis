@@ -26,9 +26,11 @@ vehicle_obs:
     ang_vel_scale: 1.0
     lin_acc_scale: 1.0
     coarse_stride: 10
-    # 1v1: append the 7-dim opponent block (num_obs auto-bumps to 387). Requires a
-    # 387-dim checkpoint and the opponent_detector node. Off by default.
-    enable_opponent_obs: false
+    # 1v1 checkpoint in 1v0 mode: keep the 387-dim layout but zero [380:387]
+    # (broken LiDAR detector). Set zero_opponent_obs: false when running 1v1.
+    num_obs: 387
+    enable_opponent_obs: true
+    zero_opponent_obs: true
     opponent_odom_topic: "/rl/opponent/odom"
     opponent_timeout_s: 0.5
 

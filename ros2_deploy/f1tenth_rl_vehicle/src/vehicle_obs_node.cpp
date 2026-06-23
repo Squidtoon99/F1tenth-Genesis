@@ -69,6 +69,7 @@ public:
     twist_in_world_frame_ = declare_parameter<bool>("twist_in_world_frame", false);
 
     enable_opponent_obs_ = declare_parameter<bool>("enable_opponent_obs", false);
+    zero_opponent_obs_ = declare_parameter<bool>("zero_opponent_obs", false);
     const std::string opp_odom_topic =
       declare_parameter<std::string>("opponent_odom_topic", "/rl/opponent/odom");
     opponent_timeout_s_ = declare_parameter<double>("opponent_timeout_s", 0.5);
@@ -124,6 +125,7 @@ public:
     // 1v1: append the 7-dim opponent block. If num_obs was left at the solo
     // default, bump it to the 1v1 size so the assembled vector matches the policy.
     cfg.enable_opponent_obs = enable_opponent_obs_;
+    cfg.zero_opponent_obs = zero_opponent_obs_;
     if (enable_opponent_obs_ && cfg.num_obs < 380 + cfg.opponent_obs_dim) {
       cfg.num_obs = 380 + cfg.opponent_obs_dim;
     }
@@ -149,7 +151,7 @@ public:
     action_sub_ = create_subscription<std_msgs::msg::Float32MultiArray>(
       action_topic, 10,
       [this](std_msgs::msg::Float32MultiArray::SharedPtr msg) {this->onAction(*msg);});
-    if (enable_opponent_obs_) {
+    if (enable_opponent_obs_ && !zero_opponent_obs_) {
       opp_sub_ = create_subscription<nav_msgs::msg::Odometry>(
         opp_odom_topic, 10,
         [this](nav_msgs::msg::Odometry::SharedPtr msg) {this->onOpponent(*msg);});
@@ -367,6 +369,7 @@ private:
   bool twist_in_world_frame_ = false;
 
   bool enable_opponent_obs_ = false;
+  bool zero_opponent_obs_ = false;
   double opponent_timeout_s_ = 0.5;
   bool have_opp_ = false;
   double opp_x_ = 0.0, opp_y_ = 0.0, opp_vx_ = 0.0, opp_vy_ = 0.0;

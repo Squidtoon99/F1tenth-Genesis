@@ -752,6 +752,19 @@ class F1tenthEnv:
         if self.opponent is not None:
             opp_ss = self._opponent_step_state(self.opp_base_pos)
             step_state["opp_s"] = opp_ss["frenet"]["s"]
+            # Same ego-frame box overlap predicate used for collision termination,
+            # exposed to the reward path for the GT Sophy any-collision penalty.
+            ego_yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
+            step_state["car_collision"] = collision_mask(
+                self.base_pos[:, :2],
+                self.opp_base_pos[:, :2],
+                ego_yaw,
+                car_length=float(self.env_cfg.get("car_length", 0.46)),
+                car_width=float(self.env_cfg.get("car_width", 0.30)),
+                collision_margin_m=float(
+                    self.env_cfg.get("collision_margin_m", 0.0)
+                ),
+            )
         self.reward_buf, self._step_state = compute_rewards(
             step_state=step_state,
             reward_cfg=self.reward_cfg,

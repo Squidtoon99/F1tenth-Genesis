@@ -75,6 +75,7 @@ def main() -> int:
         default="outputs/standalone/iv2026_1v1_500k_v1/ckpt_500000.pt",
     )
     parser.add_argument("--steps", type=int, default=300, help="control steps to roll out")
+    parser.add_argument("--track", type=str, default=DEFAULT_CONFIG["env"]["track"])
     parser.add_argument("--num-envs", type=int, default=1)
     parser.add_argument(
         "--opponent",
@@ -122,6 +123,7 @@ def main() -> int:
         return 1
 
     cfg = build_cfg(args.opponent, opponent_ckpt=args.opponent_ckpt)
+    cfg["env"]["track"] = args.track
     actor, norm_mean, norm_var, step = load_actor_and_norm(ckpt_path, cfg, device)
     print(f"[eval_record] loaded checkpoint step={step} obs_dim={cfg['obs']['num_obs']}")
     if args.opponent == "policy":
