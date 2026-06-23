@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 from typing import Any
 
@@ -5,6 +7,29 @@ import numpy as np
 import torch
 
 import genesis as gs
+from genesis.utils.geom import quat_to_xyz as _quat_to_xyz
+
+
+def quat_to_euler_rpy(
+    quat: torch.Tensor,
+    *,
+    degrees: bool = False,
+) -> torch.Tensor:
+    """Quaternion to roll-pitch-yaw (genesis 0.2.x returns degrees; 1.x uses kwargs)."""
+    import inspect
+
+    sig = inspect.signature(_quat_to_xyz)
+    if "rpy" in sig.parameters:
+        return _quat_to_xyz(quat, rpy=True, degrees=degrees)
+    euler = _quat_to_xyz(quat)
+    if not degrees:
+        euler = euler * (torch.pi / 180.0)
+    return euler
+
+
+def quat_yaw(quat: torch.Tensor) -> torch.Tensor:
+    return quat_to_euler_rpy(quat, degrees=False)[:, 2]
+
 
 # load racetracks from f1tenth_racetracks
 import requests

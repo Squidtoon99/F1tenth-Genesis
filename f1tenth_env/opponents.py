@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
-from genesis.utils.geom import quat_to_xyz
+from .utils import quat_yaw
 
 
 @dataclass
@@ -90,7 +90,7 @@ class ScriptedCenterlineOpponent(OpponentController):
         speed = (ctx.opp_vel[:, :2] * seg_dir).sum(dim=-1)
 
         track_angle = torch.atan2(seg_dir[:, 1], seg_dir[:, 0])
-        yaw = quat_to_xyz(ctx.opp_quat, rpy=True, degrees=False)[:, 2]
+        yaw = quat_yaw(ctx.opp_quat)
         heading_err = yaw - track_angle
         heading_err = torch.atan2(torch.sin(heading_err), torch.cos(heading_err))
 

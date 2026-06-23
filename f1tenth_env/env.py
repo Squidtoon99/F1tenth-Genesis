@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 import os
 from typing import Any
@@ -18,11 +20,19 @@ from .domain_randomization import (
 from .car import (
     URDF_PATH,
     ackermann_left_right,
+    base_link_lin_acc_world,
     compute_dissipative_force_world,
     compute_tyre_slip,
     compute_wheel_torques,
+    entity_method,
+    joint_dof_indices,
+    root_lin_vel_dof_indices,
+    selected_links_quat,
+    selected_links_vel,
+    selected_dofs_velocity,
     setup_entity_controls,
 )
+from .utils import quat_yaw
 from .observations import build_observation, obs_opponent
 from .opponents import OpponentContext, PolicyOpponent, make_opponent
 from .rewards import (
@@ -44,7 +54,14 @@ from .utils import (
     invalidate_step_caches,
     load_track_state,
 )
-import rerun as rr
+
+
+def _urdf_morph(**kwargs):
+    """Drop kwargs that Genesis 0.2.x on ls6 does not recognize."""
+    if getattr(gs, "__version__", "").startswith("0."):
+        kwargs.pop("default_armature", None)
+    return gs.morphs.URDF(**kwargs)
+
 
 class F1tenthEnv:
 
@@ -102,41 +119,50 @@ class F1tenthEnv:
         self.w_tr_right_torch = self.track_state["w_tr_right_torch"]
         self.spawn_z = float(self.env_cfg.get("car_spawn_pos", (0.0, 0.0, 0.01))[2])
 
-        self.scene = gs.Scene(
-            viewer_options=gs.options.ViewerOptions(
+        rigid_kw = {
+            "enable_self_collision": False,
+            "batch_links_info": True,
+            "constraint_solver": gs.constraint_solver.Newton,
+            # Genesis requires constraint_timeconst >= 2 * dt for a stable
+            # Newton solve; anything smaller can yield NaN constraint forces.
+            "constraint_timeconst": float(
+                self.env_cfg.get("constraint_timeconst", max(0.02, 2.0 * self.dt))
+            ),
+            "iterations": int(self.env_cfg.get("solver_iterations", 50)),
+            "ls_iterations": int(self.env_cfg.get("solver_ls_iterations", 50)),
+        }
+        import inspect
+
+        rigid_params = inspect.signature(gs.options.RigidOptions.__init__).parameters
+        rigid_kw = {k: v for k, v in rigid_kw.items() if k in rigid_params}
+
+        scene_kw = {
+            "viewer_options": gs.options.ViewerOptions(
                 camera_pos=(0.0, -5.0, 3.5),
                 camera_lookat=(0.4, 0.0, 0.2),
                 camera_fov=35,
                 res=(960, 640),
                 max_FPS=int(1.0 / self.dt),
             ),
-            rigid_options=gs.options.RigidOptions(
-                enable_self_collision=False,
-                batch_links_info=True,
-                constraint_solver=gs.constraint_solver.Newton,
-                # Genesis requires constraint_timeconst >= 2 * dt for a stable
-                # Newton solve; anything smaller can yield NaN constraint forces.
-                constraint_timeconst=float(
-                    self.env_cfg.get("constraint_timeconst", max(0.02, 2.0 * self.dt))
-                ),
-                iterations=int(self.env_cfg.get("solver_iterations", 50)),
-                ls_iterations=int(self.env_cfg.get("solver_ls_iterations", 50)),
-            ),
-            sim_options=gs.options.SimOptions(
+            "rigid_options": gs.options.RigidOptions(**rigid_kw),
+            "sim_options": gs.options.SimOptions(
                 dt=self.dt, substeps=int(self.env_cfg.get("sim_substeps", 10))
             ),
-            profiling_options=gs.options.ProfilingOptions(
+            "show_viewer": show_viewer,
+        }
+        if hasattr(gs.options, "ProfilingOptions"):
+            scene_kw["profiling_options"] = gs.options.ProfilingOptions(
                 show_FPS=bool(self.env_cfg.get("show_fps", False)),
-            ),
-            show_viewer=show_viewer,
-        )
+            )
+
+        self.scene = gs.Scene(**scene_kw)
 
         self.ground = self.scene.add_entity(gs.morphs.Plane())
         tire_friction = float(self.env_cfg.get("tire_friction", 0.7))
         self.ground.set_friction(tire_friction)
 
         self.car = self.scene.add_entity(
-            gs.morphs.URDF(
+            _urdf_morph(
                 file=URDF_PATH,
                 pos=self.env_cfg["car_spawn_pos"],
                 euler=self.env_cfg["car_spawn_rot"],
@@ -147,7 +173,7 @@ class F1tenthEnv:
 
         if self.env_cfg.get("opponent_strategy") is not None:
             self.opponent = self.scene.add_entity(
-                gs.morphs.URDF(
+                _urdf_morph(
                     file=URDF_PATH,
                     pos=self.env_cfg["car_spawn_pos"],
                     euler=self.env_cfg["car_spawn_rot"],
@@ -218,9 +244,7 @@ class F1tenthEnv:
             base_action_latency=base_action_latency,
         )
         self._dr["num_obs"] = self.num_obs
-        self.root_dof_vel_idx = list(
-            self.car.get_joint("root_joint").dofs_idx_local[3:6]
-        )
+        self.root_dof_vel_idx = root_lin_vel_dof_indices(self.car)
         self.slip_motion_link_idx = [
             self.car.get_link("left_rear_wheel").idx_local,
             self.car.get_link("right_rear_wheel").idx_local,
@@ -483,39 +507,38 @@ class F1tenthEnv:
         """Return full-batch (pos, quat, speed, preserve_buffers)."""
         B = self.num_envs
         preserve_buffers = False
-        match self.spawn_strategy:
-            case "fixed":
-                pos = (
-                    torch.tensor(
-                        self.env_cfg["car_spawn_pos"],
-                        dtype=gs.tc_float,
-                        device=self.device,
-                    )
-                    .reshape(1, 3)
-                    .expand(B, 3)
-                    .contiguous()
-                )
-                euler = torch.tensor(
-                    self.env_cfg["car_spawn_rot"],
+        if self.spawn_strategy == "fixed":
+            pos = (
+                torch.tensor(
+                    self.env_cfg["car_spawn_pos"],
                     dtype=gs.tc_float,
                     device=self.device,
                 )
-                q = gu.xyz_to_quat(euler, rpy=True, degrees=False)
-                quat = q.reshape(1, 4).expand(B, 4).contiguous()
-            case "eval_launch":
-                if not self._eval_launch_initialized:
-                    centerline_idx = torch.zeros(
-                        (B,), dtype=torch.long, device=self.device
-                    )
-                    self._eval_launch_initialized = True
-                else:
-                    centerline_idx = self._closest_centerline_indices(
-                        self.base_pos[:, :2]
-                    )
-                    preserve_buffers = True
-                pos, quat = self._sample_track_spawn_batch(centerline_idx=centerline_idx)
-            case _:
-                pos, quat = self._sample_track_spawn_batch()
+                .reshape(1, 3)
+                .expand(B, 3)
+                .contiguous()
+            )
+            euler = torch.tensor(
+                self.env_cfg["car_spawn_rot"],
+                dtype=gs.tc_float,
+                device=self.device,
+            )
+            q = gu.xyz_to_quat(euler, rpy=True, degrees=False)
+            quat = q.reshape(1, 4).expand(B, 4).contiguous()
+        elif self.spawn_strategy == "eval_launch":
+            if not self._eval_launch_initialized:
+                centerline_idx = torch.zeros(
+                    (B,), dtype=torch.long, device=self.device
+                )
+                self._eval_launch_initialized = True
+            else:
+                centerline_idx = self._closest_centerline_indices(
+                    self.base_pos[:, :2]
+                )
+                preserve_buffers = True
+            pos, quat = self._sample_track_spawn_batch(centerline_idx=centerline_idx)
+        else:
+            pos, quat = self._sample_track_spawn_batch()
         speed = self._sample_reset_speed()
         return pos, quat, speed, preserve_buffers
 
@@ -547,16 +570,16 @@ class F1tenthEnv:
         # and zero_velocity=True clears every dof velocity for the masked envs (so a
         # rest spawn needs no explicit dof setters). Immediate forward kinematics
         # (default skip_forward=False) makes the new pose readable without scene.step.
-        car.set_pos(pos, envs_idx=mask, zero_velocity=True, relative=False)
-        car.set_quat(quat, envs_idx=mask, zero_velocity=True, relative=False)
+        entity_method(car, "set_pos", pos, envs_idx=mask, zero_velocity=True, relative=False)
+        entity_method(car, "set_quat", quat, envs_idx=mask, zero_velocity=True, relative=False)
 
         if self.opponent is not None:
             opp_pos, opp_quat = self._spawn_opponent_ahead_of_ego(pos)
-            self.opponent.set_pos(
-                opp_pos, envs_idx=mask, zero_velocity=True, relative=False
+            entity_method(
+                self.opponent, "set_pos", opp_pos, envs_idx=mask, zero_velocity=True, relative=False
             )
-            self.opponent.set_quat(
-                opp_quat, envs_idx=mask, zero_velocity=True, relative=False
+            entity_method(
+                self.opponent, "set_quat", opp_quat, envs_idx=mask, zero_velocity=True, relative=False
             )
             self.opp_steer_state = torch.where(
                 mask, torch.zeros_like(self.opp_steer_state), self.opp_steer_state
@@ -651,7 +674,7 @@ class F1tenthEnv:
         steer_zeros = torch.zeros(
             (n, len(self.steer_dofs)), dtype=gs.tc_float, device=self.device
         )
-        yaw = gu.quat_to_xyz(quat[env_ids], rpy=True, degrees=False)[:, 2]
+        yaw = quat_yaw(quat[env_ids])
         root_vel = torch.stack(
             [sp * torch.cos(yaw), sp * torch.sin(yaw), torch.zeros_like(sp)], dim=-1
         )
@@ -684,13 +707,13 @@ class F1tenthEnv:
             )
 
             self._step_state["wheel_state"] = dict(
-                motion_link_vel=self.car.get_links_vel(
-                    links_idx_local=self.slip_motion_link_idx, ref="link_com"
+                motion_link_vel=selected_links_vel(
+                    self.car, self.slip_motion_link_idx, ref="link_com"
                 ),
-                frame_quat=self.car.get_links_quat(
-                    links_idx_local=self.slip_frame_link_idx
+                frame_quat=selected_links_quat(
+                    self.car, self.slip_frame_link_idx
                 ),
-                dof_vel=self.car.get_dofs_velocity(dofs_idx_local=self.wheel_dofs),
+                dof_vel=selected_dofs_velocity(self.car, self.wheel_dofs),
             )
             wheel_radius = float(self.env_cfg.get("wheel_radius", 0.05))
             slip_eps = float(self.reward_cfg.get("slip_eps", 0.1))
@@ -719,7 +742,7 @@ class F1tenthEnv:
             self.opp_vel_world = self.opponent.get_vel()
 
         self.base_lin_acc = gu.inv_transform_by_quat(
-            car.get_links_acc(links_idx_local=[self.base_link_idx_local])[:, 0, :],
+            base_link_lin_acc_world(car, self.base_link_idx_local),
             quat,
         )
         invalidate_step_caches(self.track_state)
@@ -754,7 +777,7 @@ class F1tenthEnv:
             step_state["opp_s"] = opp_ss["frenet"]["s"]
             # Same ego-frame box overlap predicate used for collision termination,
             # exposed to the reward path for the GT Sophy any-collision penalty.
-            ego_yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
+            ego_yaw = quat_yaw(self.base_quat)
             step_state["car_collision"] = collision_mask(
                 self.base_pos[:, :2],
                 self.opp_base_pos[:, :2],
@@ -796,7 +819,7 @@ class F1tenthEnv:
         if self.opponent is not None and bool(
             self.env_cfg.get("term_on_collision", True)
         ):
-            ego_yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
+            ego_yaw = quat_yaw(self.base_quat)
             collision = collision_mask(
                 self.base_pos[:, :2],
                 self.opp_base_pos[:, :2],
@@ -980,7 +1003,7 @@ class F1tenthEnv:
         step_state: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
         """Pack the per-car fields the symmetric opponent-obs block needs."""
-        yaw = gu.quat_to_xyz(quat, rpy=True, degrees=False)[:, 2]
+        yaw = quat_yaw(quat)
         return {
             "pos_xy": pos[:, :2],
             "yaw": yaw,
@@ -1016,11 +1039,11 @@ class F1tenthEnv:
 
         opp_ss = dict(opp_step_state)
         opp_ss["wheel_state"] = dict(
-            motion_link_vel=opp.get_links_vel(
-                links_idx_local=self.slip_motion_link_idx, ref="link_com"
+            motion_link_vel=selected_links_vel(
+                opp, self.slip_motion_link_idx, ref="link_com"
             ),
-            frame_quat=opp.get_links_quat(links_idx_local=self.slip_frame_link_idx),
-            dof_vel=opp.get_dofs_velocity(dofs_idx_local=self.wheel_dofs),
+            frame_quat=selected_links_quat(opp, self.slip_frame_link_idx),
+            dof_vel=selected_dofs_velocity(opp, self.wheel_dofs),
         )
         wheel_radius = float(self.env_cfg.get("wheel_radius", 0.05))
         slip_eps = float(self.reward_cfg.get("slip_eps", 0.1))
@@ -1120,7 +1143,11 @@ class F1tenthEnv:
     def _apply_dissipative_force(self, force: torch.Tensor) -> None:
         # External forces are cleared at the end of every scene.step(), so the
         # cached force must be re-applied immediately before each substep.
-        self.car._solver.apply_links_external_force(
+        if force.ndim == 2:
+            force = force.unsqueeze(1)
+        entity_method(
+            self.car._solver,
+            "apply_links_external_force",
             force,
             links_idx=(self.base_link_idx,),
             ref="link_com",
@@ -1150,6 +1177,8 @@ class F1tenthEnv:
                     pos=position.cpu() + np.array([3.0, 0.0, 7.0]),
                 )
                 rgb, *_ = self.cam1.render()
+                import rerun as rr
+
                 rr.log("image", rr.Image(rgb))
         self.episode_steps_buf += 1
         self._update_state_buffers()

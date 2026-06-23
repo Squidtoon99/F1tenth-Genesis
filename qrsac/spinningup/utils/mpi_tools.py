@@ -1,4 +1,7 @@
-from mpi4py import MPI
+try:
+    from mpi4py import MPI
+except ImportError:  # standalone trainer on a node without MPI
+    MPI = None
 import os, subprocess, sys
 import numpy as np
 
@@ -38,15 +41,21 @@ def msg(m, string=""):
 
 def proc_id():
     """Get rank of calling process."""
+    if MPI is None:
+        return 0
     return MPI.COMM_WORLD.Get_rank()
 
 
 def allreduce(*args, **kwargs):
+    if MPI is None:
+        raise RuntimeError("MPI is not available")
     return MPI.COMM_WORLD.Allreduce(*args, **kwargs)
 
 
 def num_procs():
     """Count active MPI processes."""
+    if MPI is None:
+        return 1
     return MPI.COMM_WORLD.Get_size()
 
 
@@ -83,6 +92,14 @@ def mpi_statistics_scalar(x, with_min_and_max=False):
             addition to mean and std.
     """
     x = np.array(x, dtype=np.float32)
+    if MPI is None:
+        mean = float(np.mean(x)) if len(x) else 0.0
+        std = float(np.std(x)) if len(x) else 0.0
+        if with_min_and_max:
+            return mean, std, float(np.min(x) if len(x) else np.inf), float(
+                np.max(x) if len(x) else -np.inf
+            )
+        return mean, std
     global_sum, global_n = mpi_sum([np.sum(x), len(x)])
     mean = global_sum / global_n
 

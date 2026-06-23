@@ -863,11 +863,12 @@ def main():
 
     _maybe_patch_headless_rasterizer()
     backend = select_genesis_backend(args.backend)
-    gs.init(
-        backend=backend,
-        precision=args.precision,
-        performance_mode=True,
-    )
+    init_kwargs = {"backend": backend, "precision": args.precision}
+    import inspect
+
+    if "performance_mode" in inspect.signature(gs.init).parameters:
+        init_kwargs["performance_mode"] = True
+    gs.init(**init_kwargs)
     # Keep the RL pipeline (normalizer, networks, replay buffer) on the same
     # device as the Genesis sim so env outputs don't straddle two devices. On a
     # GPU backend gs.device is the accelerator (CUDA / Apple MPS); on CPU it is

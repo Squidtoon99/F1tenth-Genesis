@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import Boolean
 from sqlalchemy import DateTime
@@ -42,9 +42,9 @@ class TrainingSession(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    steps: Mapped[int | None] = mapped_column(nullable=True)
-    episodes: Mapped[int | None] = mapped_column(nullable=True)
-    best_reward: Mapped[float | None] = mapped_column(nullable=True)
+    steps: Mapped[Optional[int]] = mapped_column(nullable=True)
+    episodes: Mapped[Optional[int]] = mapped_column(nullable=True)
+    best_reward: Mapped[Optional[float]] = mapped_column(nullable=True)
 
     status: Mapped[TrainingSessionStatus] = mapped_column(
         SAEnum(TrainingSessionStatus, name="training_session_status"),
@@ -105,7 +105,7 @@ class EvalRun(Base):
         nullable=False,
         index=True,
     )
-    policy_id: Mapped[int | None] = mapped_column(
+    policy_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("policies.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
@@ -113,9 +113,9 @@ class EvalRun(Base):
 
     track_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
 
-    best_lap: Mapped[float | None] = mapped_column(nullable=True)
-    worst_lap: Mapped[float | None] = mapped_column(nullable=True)
-    avg_lap: Mapped[float | None] = mapped_column(nullable=True)
+    best_lap: Mapped[Optional[float]] = mapped_column(nullable=True)
+    worst_lap: Mapped[Optional[float]] = mapped_column(nullable=True)
+    avg_lap: Mapped[Optional[float]] = mapped_column(nullable=True)
 
     collisions: Mapped[int] = mapped_column(nullable=False, default=0)
     off_track: Mapped[int] = mapped_column(nullable=False, default=0)
@@ -127,4 +127,4 @@ class EvalRun(Base):
     )
 
     session: Mapped["TrainingSession"] = relationship(back_populates="eval_runs")
-    policy: Mapped["Policy | None"] = relationship(back_populates="eval_runs")
+    policy: Mapped[Optional["Policy"]] = relationship(back_populates="eval_runs")

@@ -2,6 +2,9 @@
 Vehicle geometry, control setup, and force-based drive/brake model.
 """
 
+from __future__ import annotations
+
+import inspect
 import os
 from typing import Any
 
@@ -25,6 +28,143 @@ STEER_JOINTS = [
     "left_steering_hinge_joint",
     "right_steering_hinge_joint",
 ]
+
+
+def entity_method(entity, method: str, /, *args, **kwargs):
+    """Call a Genesis entity method, dropping kwargs the installed version lacks."""
+    fn = getattr(entity, method)
+    params = inspect.signature(fn).parameters
+    return fn(*args, **{k: v for k, v in kwargs.items() if k in params})
+
+
+def joint_dof_indices(joint) -> list[int]:
+    """Return local DOF indices for a joint (genesis 0.2.x and 1.x)."""
+    if hasattr(joint, "dofs_idx_local"):
+        return list(joint.dofs_idx_local)
+    local = joint.dof_idx_local
+    if isinstance(local, (list, tuple)):
+        return list(local)
+    base = int(local)
+    n = int(joint.n_dofs)
+    return list(range(base, base + n))
+
+
+def root_lin_vel_dof_indices(car) -> list[int]:
+    """Local DOF indices for root linear velocity (genesis 0.2.x and 1.x)."""
+    joint = None
+    try:
+        joint = car.get_joint("root_joint")
+    except Exception:
+        for candidate in car.joints:
+            if int(candidate.n_dofs) == 6:
+                joint = candidate
+                break
+    if joint is None:
+        return [3, 4, 5]
+    return joint_dof_indices(joint)[3:6]
+
+
+def _select_entity_links(tensor: torch.Tensor, link_indices) -> torch.Tensor:
+    idx = torch.as_tensor(link_indices, device=tensor.device, dtype=torch.long)
+    if tensor.ndim == 2:
+        return tensor.index_select(0, idx)
+    return tensor.index_select(1, idx)
+
+
+def _scene_n_envs(car) -> int:
+    n = int(getattr(car._solver, "n_envs", 0))
+    if n > 0:
+        return n
+    scene = getattr(car, "_scene", None)
+    if scene is not None:
+        return max(int(getattr(scene, "n_envs", 0)), 1)
+    return 1
+
+
+def _ensure_env_link_batch(tensor: torch.Tensor, car) -> torch.Tensor:
+    """Genesis 0.2.x may return (n_links, dim) even with n_envs > 1."""
+    n_envs = _scene_n_envs(car)
+    if tensor.ndim == 2:
+        tensor = tensor.unsqueeze(0)
+    if tensor.shape[0] == 1 and n_envs > 1:
+        tensor = tensor.expand(n_envs, -1, -1)
+    return tensor
+
+
+def selected_dofs_velocity(car, dof_indices) -> torch.Tensor:
+    """DOF velocities for selected indices (genesis 0.2.x and 1.x)."""
+    vel = car.get_dofs_velocity(dofs_idx_local=dof_indices)
+    if vel.ndim == 1:
+        vel = vel.unsqueeze(0)
+    expected = len(dof_indices)
+    if vel.shape[-1] != expected:
+        idx = torch.as_tensor(dof_indices, device=vel.device, dtype=torch.long)
+        vel = vel.index_select(-1, idx)
+    n_envs = _scene_n_envs(car)
+    if vel.shape[0] == 1 and n_envs > 1:
+        vel = vel.expand(n_envs, -1)
+    return vel
+
+
+def selected_links_vel(car, link_indices, ref: str = "link_com") -> torch.Tensor:
+    """Linear velocity for selected links (genesis 0.2.x and 1.x)."""
+    sig = inspect.signature(car.get_links_vel)
+    kwargs = {
+        k: v
+        for k, v in {"links_idx_local": link_indices, "ref": ref}.items()
+        if k in sig.parameters
+    }
+    if kwargs:
+        out = car.get_links_vel(**kwargs)
+    else:
+        full = car.get_links_vel()
+        idx = torch.as_tensor(link_indices, device=full.device, dtype=torch.long)
+        if full.ndim == 2:
+            out = full.index_select(0, idx)
+        else:
+            out = full.index_select(1, idx)
+    out = _ensure_env_link_batch(out, car)
+    if out.shape[1] != len(link_indices):
+        idx = torch.arange(len(link_indices), device=out.device)
+        out = out.index_select(1, idx)
+    return out
+
+
+def selected_links_quat(car, link_indices) -> torch.Tensor:
+    """Quaternion for selected links (genesis 0.2.x and 1.x)."""
+    sig = inspect.signature(car.get_links_quat)
+    kwargs = {
+        k: v for k, v in {"links_idx_local": link_indices}.items() if k in sig.parameters
+    }
+    if kwargs:
+        out = car.get_links_quat(**kwargs)
+    else:
+        full = car.get_links_quat()
+        idx = torch.as_tensor(link_indices, device=full.device, dtype=torch.long)
+        if full.ndim == 2:
+            out = full.index_select(0, idx)
+        else:
+            out = full.index_select(1, idx)
+    out = _ensure_env_link_batch(out, car)
+    if out.shape[1] != len(link_indices):
+        idx = torch.arange(len(link_indices), device=out.device)
+        out = out.index_select(1, idx)
+    return out
+
+
+def base_link_lin_acc_world(car, link_idx_local: int) -> torch.Tensor:
+    """World-frame linear acceleration of a link, or zeros if unsupported."""
+    if not hasattr(car, "get_links_acc"):
+        n_envs = max(int(getattr(car._solver, "n_envs", 0)), 1)
+        return torch.zeros((n_envs, 3), dtype=gs.tc_float, device=gs.device)
+    sig = inspect.signature(car.get_links_acc)
+    kwargs = {
+        k: v
+        for k, v in {"links_idx_local": [link_idx_local]}.items()
+        if k in sig.parameters
+    }
+    return car.get_links_acc(**kwargs)[:, 0, :]
+
 
 WHEEL_RADIUS = 0.05
 WHEELBASE = 0.325
@@ -78,12 +218,26 @@ def compute_tyre_slip(
     # wheels, the steering hinge for the front wheels) before splitting it.
     lin_vel = wheel_state["motion_link_vel"]
     frame_quat = wheel_state.get("frame_quat")
+    if lin_vel.ndim == 2:
+        lin_vel = lin_vel.unsqueeze(0)
     if frame_quat is not None:
+        if frame_quat.ndim == 2:
+            frame_quat = frame_quat.unsqueeze(0).expand(lin_vel.shape[0], -1, -1)
         lin_vel_local = gu.inv_transform_by_quat(lin_vel, frame_quat)
     else:
-        # No frame given: treat the velocity as already wheel-frame (unit tests).
         lin_vel_local = lin_vel
+    if lin_vel_local.ndim == 2:
+        lin_vel_local = lin_vel_local.unsqueeze(0)
     spin_rate = wheel_state["dof_vel"]
+    if spin_rate.ndim == 1:
+        spin_rate = spin_rate.unsqueeze(0)
+    n_wheels = spin_rate.shape[-1]
+    if lin_vel_local.shape[1] != n_wheels:
+        lin_vel_local = lin_vel_local[:, :n_wheels, :]
+    if lin_vel_local.shape[0] == 1 and spin_rate.shape[0] > 1:
+        lin_vel_local = lin_vel_local.expand(spin_rate.shape[0], -1, -1)
+    elif spin_rate.shape[0] == 1 and lin_vel_local.shape[0] > 1:
+        spin_rate = spin_rate.expand(lin_vel_local.shape[0], -1)
 
     v_fwd = lin_vel_local[:, :, 0]
     v_lat = lin_vel_local[:, :, 1]
@@ -266,9 +420,9 @@ def chassis_force_to_root_world(
     base_quat: torch.Tensor,
 ) -> torch.Tensor:
     """Map body-frame longitudinal force to world-frame root linear force."""
-    from genesis.utils.geom import quat_to_xyz
+    from .utils import quat_yaw
 
-    yaw = quat_to_xyz(base_quat, rpy=True, degrees=False)[:, 2]
+    yaw = quat_yaw(base_quat)
     fx = f_long_body * torch.cos(yaw)
     fy = f_long_body * torch.sin(yaw)
     return torch.stack([fx, fy, torch.zeros_like(fx)], dim=-1)
@@ -282,10 +436,10 @@ def setup_entity_controls(
     env_cfg = env_cfg or {}
     wheel_dofs = []
     for name in WHEEL_JOINTS:
-        wheel_dofs.extend(car.get_joint(name).dofs_idx_local)
+        wheel_dofs.extend(joint_dof_indices(car.get_joint(name)))
     steer_dofs = []
     for name in STEER_JOINTS:
-        steer_dofs.extend(car.get_joint(name).dofs_idx_local)
+        steer_dofs.extend(joint_dof_indices(car.get_joint(name)))
 
     f_drive_max = float(env_cfg.get("f_drive_max", 23.0))
     f_brake_max = float(env_cfg.get("f_brake_max", 23.0))
@@ -304,7 +458,8 @@ def setup_entity_controls(
 
     c_roll = float(env_cfg.get("c_roll", 0.0))
     car.set_dofs_damping(np.zeros(4, dtype=np.float32), wheel_dofs)
-    car.set_dofs_frictionloss(np.zeros(4, dtype=np.float32), wheel_dofs)
+    if hasattr(car, "set_dofs_frictionloss"):
+        car.set_dofs_frictionloss(np.zeros(4, dtype=np.float32), wheel_dofs)
     if c_roll > 0.0:
         car.set_dofs_damping(np.full(4, c_roll, dtype=np.float32), wheel_dofs)
 
@@ -330,6 +485,13 @@ def setup_entity_controls(
         ],
         dtype=np.float32,
     )
-    ratios_t = torch.from_numpy(ratios[None, :]).to(device=gs.device)
-    car.set_friction_ratio(ratios_t, links_idx_local=link_ids)
+    n_envs = max(int(getattr(car._solver, "n_envs", 0)), 1)
+    ratios_t = torch.from_numpy(ratios).to(device=gs.device).expand(n_envs, -1)
+    import inspect
+
+    fric_params = inspect.signature(car.set_friction_ratio).parameters
+    if "links_idx_local" in fric_params:
+        car.set_friction_ratio(ratios_t, links_idx_local=link_ids)
+    else:
+        car.set_friction_ratio(ratios_t, link_ids)
     return (wheel_dofs, steer_dofs)

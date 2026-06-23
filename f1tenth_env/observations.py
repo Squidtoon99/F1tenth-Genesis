@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 from typing import Any
 
@@ -5,7 +7,8 @@ import numpy as np
 import torch
 
 import genesis as gs
-from genesis.utils.geom import quat_to_xyz
+
+from .utils import quat_to_euler_rpy, quat_yaw
 
 
 def obs_track_progress(
@@ -32,7 +35,7 @@ def obs_centerline_angle(
         frenet_state["seg_dir"][:, 1], frenet_state["seg_dir"][:, 0]
     )
 
-    euler_xyz = quat_to_xyz(base_quat, rpy=True, degrees=False)
+    euler_xyz = quat_to_euler_rpy(base_quat, degrees=False)
     yaw = euler_xyz[:, 2]
 
     theta_err = yaw - track_angle
@@ -73,7 +76,7 @@ def obs_future_track_points(
 
     robot_pos = base_pos[:, :2]
     lin_vel = base_lin_vel[:, :2]
-    yaw = quat_to_xyz(base_quat, rpy=True, degrees=False)[:, 2]
+    yaw = quat_yaw(base_quat)
 
     batch = robot_pos.shape[0]
     samples = int(obs_cfg.get("future_track_num_points", 60))

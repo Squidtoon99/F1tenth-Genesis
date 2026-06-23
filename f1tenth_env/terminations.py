@@ -4,7 +4,7 @@ from typing import Any
 import torch
 
 import genesis as gs
-from genesis.utils.geom import quat_to_xyz
+from .utils import quat_yaw
 
 from .utils import compute_oob_from_boundary_state
 
@@ -67,7 +67,7 @@ def invalid_state_mask(
         track_angle = torch.atan2(
             step_state["frenet"]["seg_dir"][:, 1], step_state["frenet"]["seg_dir"][:, 0]
         )
-        yaw = quat_to_xyz(base_quat, rpy=True, degrees=False)[:, 2]
+        yaw = quat_yaw(base_quat)
         heading_err = yaw - track_angle
         heading_err = torch.atan2(torch.sin(heading_err), torch.cos(heading_err))
 
