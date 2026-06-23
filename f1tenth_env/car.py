@@ -37,7 +37,12 @@ KP_STEER = np.array([8.0, 8.0], dtype=np.float32)
 KV_STEER = np.array([0.8, 0.8], dtype=np.float32)
 EFF_STEER = np.array([10.0, 10.0], dtype=np.float32)
 
+# Low base geom friction for non-wheel links (chassis). Wheel mu is
+# CHASSIS_FRICTION * friction_ratio = tire_friction (see setup_entity_controls).
 CHASSIS_FRICTION = 0.05
+
+# Carpet baseline when env_cfg omits tire_friction (matches config.DEFAULT_CONFIG).
+DEFAULT_TIRE_FRICTION = 0.75
 
 
 def ackermann_left_right(
@@ -120,7 +125,7 @@ def compute_wheel_torques(
     if tire_friction is None:
         mue = torch.full(
             (throttle_cmd.shape[0],),
-            float(env_cfg.get("tire_friction", 0.7)),
+            float(env_cfg.get("tire_friction", DEFAULT_TIRE_FRICTION)),
             dtype=gs.tc_float,
             device=throttle_cmd.device,
         )
@@ -224,7 +229,7 @@ def compute_chassis_longitudinal_force(
     f_brake_max = float(env_cfg.get("f_brake_max", 23.0))
     power_max = float(env_cfg.get("power_max", 255.0))
     v_eps = float(env_cfg.get("v_eps", 0.1))
-    mue = float(env_cfg.get("tire_friction", 0.7))
+    mue = float(env_cfg.get("tire_friction", DEFAULT_TIRE_FRICTION))
     dragcoeff = float(env_cfg.get("dragcoeff", 0.075))
     enable_drag = bool(env_cfg.get("enable_aero_drag", False))
 
@@ -308,7 +313,7 @@ def setup_entity_controls(
     if c_roll > 0.0:
         car.set_dofs_damping(np.full(4, c_roll, dtype=np.float32), wheel_dofs)
 
-    tire_friction = float(env_cfg.get("tire_friction", 0.7))
+    tire_friction = float(env_cfg.get("tire_friction", DEFAULT_TIRE_FRICTION))
     car.set_friction(CHASSIS_FRICTION)
 
     link_names = [

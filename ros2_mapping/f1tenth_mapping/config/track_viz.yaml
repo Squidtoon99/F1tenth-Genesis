@@ -1,0 +1,6 @@
+track_viz:
+  ros__parameters:
+    track_csv: "/home/shereef/maps/f1tenth_map_centerline.csv"
+    frame_id: "map"
+    publish_hz: 1.0
+    line_width: 0.06

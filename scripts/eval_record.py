@@ -34,8 +34,10 @@ from f1tenth_env import F1tenthEnv  # noqa: E402
 from qrsac import SquashedGaussianMLPActor  # noqa: E402
 
 
-def build_cfg(opponent: str, opponent_ckpt: str | None = None) -> dict:
+def build_cfg(opponent: str, opponent_ckpt: str | None = None, track: str | None = None) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
+    if track:
+        cfg["env"]["track"] = track
     if opponent != "none":
         cfg["env"]["opponent_strategy"] = opponent
         if opponent == "policy":
@@ -76,6 +78,12 @@ def main() -> int:
     )
     parser.add_argument("--steps", type=int, default=300, help="control steps to roll out")
     parser.add_argument("--num-envs", type=int, default=1)
+    parser.add_argument(
+        "--track",
+        type=str,
+        default=None,
+        help="centerline CSV path (or bundled track name) to override DEFAULT_CONFIG track",
+    )
     parser.add_argument(
         "--opponent",
         type=str,
@@ -121,7 +129,9 @@ def main() -> int:
         print("[eval_record] --opponent policy requires --opponent-ckpt")
         return 1
 
-    cfg = build_cfg(args.opponent, opponent_ckpt=args.opponent_ckpt)
+    cfg = build_cfg(args.opponent, opponent_ckpt=args.opponent_ckpt, track=args.track)
+    if args.track:
+        print(f"[eval_record] track override: {args.track}")
     actor, norm_mean, norm_var, step = load_actor_and_norm(ckpt_path, cfg, device)
     print(f"[eval_record] loaded checkpoint step={step} obs_dim={cfg['obs']['num_obs']}")
     if args.opponent == "policy":

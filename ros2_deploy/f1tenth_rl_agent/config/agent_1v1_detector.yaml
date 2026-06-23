@@ -20,7 +20,7 @@ policy_inference:
   ros__parameters:
     checkpoint_path: ""
     state_dict_key: "actor"
-    device: "cpu"
+    device: "cuda"
     deterministic: true
     demo_throttle_floor: 0.55
     norm_clip: 10.0

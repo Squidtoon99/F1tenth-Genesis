@@ -30,7 +30,7 @@ class PolicyInferenceNode(Node):
         super().__init__("policy_inference", **kwargs)
         self.declare_parameter("checkpoint_path", "")
         self.declare_parameter("state_dict_key", "actor")
-        self.declare_parameter("device", "cpu")
+        self.declare_parameter("device", "cuda")
         self.declare_parameter("deterministic", True)
         self.declare_parameter("demo_throttle_floor", 0.0)
         self.declare_parameter("norm_clip", ifc.OBS_NORM_CLIP)

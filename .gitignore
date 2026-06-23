@@ -15,6 +15,9 @@ outputs
 .pickle
 tracks.pickle
 
+# raw rosbag captures (binary, large)
+bags/
+
 # Cmake build files
 CmakeFiles
 CMakeCache.txt
