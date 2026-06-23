@@ -28,7 +28,7 @@ target_include_directories(rl_obs_core PUBLIC
 # --- nodes --------------------------------------------------------------------
 add_executable(vehicle_obs src/vehicle_obs_node.cpp)
 target_link_libraries(vehicle_obs rl_obs_core)
-ament_target_dependencies(vehicle_obs rclcpp nav_msgs std_msgs)
+ament_target_dependencies(vehicle_obs rclcpp nav_msgs std_msgs sensor_msgs)
 
 add_executable(drive src/drive_node.cpp)
 target_link_libraries(drive rl_obs_core)

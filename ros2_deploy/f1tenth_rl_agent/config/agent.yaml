@@ -37,9 +37,15 @@ drive_command:
     max_speed: 3.0
     max_steer: 0.30
     clip_actions: 1.0
+    # Hard cap on commanded speed (m/s). Matches real-car shakedown in vehicle.yaml.
+    speed_limit_mps: 2.0
     watchdog_timeout_s: 0.5
     # "stop" -> negative throttle commands zero speed; "reverse" -> allow negative speed.
     brake_behavior: "stop"
+    # Match Genesis F1tenthEnv steer lag (config.py t_delta at 10 Hz control).
+    enable_output_filter: true
+    t_delta: 0.1
+    control_dt: 0.1
 
 evaluation:
   ros__parameters:

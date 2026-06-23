@@ -111,6 +111,19 @@ std::array<double, 8> computeTyreSlip(
   return out;
 }
 
+double lagAlpha(double control_dt, double t_delta)
+{
+  t_delta = std::max(t_delta, 1e-9);
+  control_dt = std::max(control_dt, 1e-9);
+  return control_dt / (t_delta + control_dt);
+}
+
+double stepFirstOrderLag(double state, double target, double alpha)
+{
+  alpha = clampd(alpha, 0.0, 1.0);
+  return state + alpha * (target - state);
+}
+
 std::pair<double, double> mapActionToDrive(
   double throttle,
   double steering,

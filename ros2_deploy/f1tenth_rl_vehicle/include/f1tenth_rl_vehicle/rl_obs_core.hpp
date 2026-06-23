@@ -115,6 +115,10 @@ std::array<double, 8> computeTyreSlip(
   double wheel_radius,
   double slip_eps = 0.1);
 
+// First-order lag helpers (match F1tenthEnv steer_state / t_delta).
+double lagAlpha(double control_dt, double t_delta);
+double stepFirstOrderLag(double state, double target, double alpha);
+
 // Map a policy action to (speed_mps, steering_angle_rad). Port of
 // drive_math.map_action_to_drive. brake_behavior is "stop" or "reverse".
 std::pair<double, double> mapActionToDrive(

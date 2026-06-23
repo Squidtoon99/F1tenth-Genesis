@@ -361,6 +361,13 @@ TEST(OpponentDetectorTest, WallNeverConfirms)
   EXPECT_FALSE(res.present);
 }
 
+TEST(RlObsCore, LagFilter)
+{
+  EXPECT_NEAR(f1tenth_rl_vehicle::lagAlpha(0.1, 0.1), 0.5, 1e-9);
+  EXPECT_NEAR(f1tenth_rl_vehicle::stepFirstOrderLag(0.0, 1.0, 0.5), 0.5, 1e-9);
+  EXPECT_NEAR(f1tenth_rl_vehicle::stepFirstOrderLag(0.5, 1.0, 0.5), 0.75, 1e-9);
+}
+
 TEST(RlObsCore, MapActionToDrive)
 {
   auto [speed, steer] =

@@ -78,6 +78,10 @@ drive:
     speed_limit_mps: 2.0
     watchdog_timeout_s: 0.5
     brake_behavior: "stop"
+    # Match Genesis F1tenthEnv steer lag; tune t_delta after vehicle_calibration/fit.
+    enable_output_filter: true
+    t_delta: 0.1
+    control_dt: 0.1
     action_topic: "/rl/action"
     # Publishes straight to the f1tenth_stack ackermann_mux autonomous input.
     drive_topic: "/drive"
