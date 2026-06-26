@@ -5,7 +5,7 @@ import torch
 from threading import Thread
 from tqdm import tqdm
 from config import Config
-from .spinningup.sac import ReplayBuffer
+from .spinningup.buffer import ReplayBuffer
 
 
 class TabledReplayBuffer(object):
