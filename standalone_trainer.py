@@ -24,6 +24,7 @@ import torch.nn as nn
 
 from config import DEFAULT_CONFIG
 from f1tenth_env import F1tenthEnv
+from f1tenth_env.utils import episode_length_for_track
 from run_layout import checkpoint_dir, config_snapshot_path, default_run_dir, run_log_path
 from qrsac import Models, QRSACTrainer, QuantileCritic, SquashedGaussianMLPActor
 
@@ -510,6 +511,7 @@ def accumulate_step_diagnostics(
         "oob_mask",
         "progress_ds",
         "lap_count",
+        "laps_completed",
         "opp_speed",
         "nonfinite_obs_envs",
         "nonfinite_reward_envs",
@@ -517,7 +519,7 @@ def accumulate_step_diagnostics(
     ):
         value = metrics.get(name)
         if isinstance(value, torch.Tensor):
-            if name.startswith("nonfinite_"):
+            if name.startswith("nonfinite_") or name == "laps_completed":
                 diag.add_total(f"metric/{name}", value)
             else:
                 diag.add_mean(f"metric/{name}", value)
@@ -535,6 +537,25 @@ def accumulate_step_diagnostics(
 def build_config(args: argparse.Namespace) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["env"]["track"] = args.track
+
+    # Episode horizon: explicit override, else derive from the track centerline
+    # length so each track gets ~episode_lap_multiplier laps of racing time.
+    if getattr(args, "episode_length", None) is not None:
+        cfg["env"]["episode_length"] = float(args.episode_length)
+    else:
+        lap_multiplier = (
+            float(args.episode_lap_multiplier)
+            if getattr(args, "episode_lap_multiplier", None) is not None
+            else float(cfg["env"].get("episode_lap_multiplier", 3.0))
+        )
+        workspace_dir = str(Path(__file__).resolve().parent)
+        cfg["env"]["episode_length"] = episode_length_for_track(
+            track=args.track,
+            workspace_dir=workspace_dir,
+            ref_lap_speed_mps=float(cfg["env"].get("expected_lap_speed_mps", 3.5)),
+            lap_multiplier=lap_multiplier,
+        )
+
     if args.n_step is not None:
         cfg["model"]["n_step"] = args.n_step
 
@@ -560,9 +581,14 @@ def build_config(args: argparse.Namespace) -> dict:
     # Trained from scratch, so we just size the networks/normalizer at the larger
     # num_obs - no checkpoint surgery. 1v0 (opponent "none") leaves everything as
     # the unchanged solo config.
-    use_1v1 = args.self_play or args.opponent != "none"
+    # --mixed-opponents implies self-play (the policy half of the mix is refreshed
+    # from the learner snapshot pool just like pure self-play).
+    self_play = args.self_play or args.mixed_opponents
+    use_1v1 = self_play or args.opponent != "none"
     if use_1v1:
-        if args.self_play:
+        if args.mixed_opponents:
+            cfg["env"]["opponent_strategy"] = "mixed"
+        elif args.self_play:
             cfg["env"]["opponent_strategy"] = "policy"
         else:
             cfg["env"]["opponent_strategy"] = args.opponent
@@ -574,6 +600,17 @@ def build_config(args: argparse.Namespace) -> dict:
         cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
         # Activate the passing reward term (gated by presence of this scale).
         cfg["reward"]["reward_scales"]["passing"] = args.passing_scale
+        # Activate the GT Sophy any-collision penalty (gated by this scale).
+        cfg["reward"]["reward_scales"]["collision"] = args.collision_scale
+        # Activate the GT Sophy rear-end penalty Rr (gated by this scale). 0.0
+        # leaves it out of the reward breakdown entirely.
+        if float(args.rear_end_scale) != 0.0:
+            cfg["reward"]["reward_scales"]["rear_end"] = args.rear_end_scale
+        # Closing-speed threshold for collision termination (0.0 = terminate on any
+        # overlap). Below it, contacts only apply penalties/physics and the episode
+        # continues.
+        if args.collision_term_speed is not None:
+            cfg["env"]["collision_term_speed_mps"] = float(args.collision_term_speed)
         # Car-car contacts need a slightly softer / better-resolved constraint solve.
         cfg["env"]["solver_iterations"] = max(
             int(cfg["env"].get("solver_iterations", 50)), 80
@@ -685,6 +722,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--track", type=str, default=cfg["env"]["track"])
     parser.add_argument(
+        "--episode-length",
+        type=float,
+        default=None,
+        help="Episode horizon in seconds. Default: derived from the track centerline "
+        "length (episode_lap_multiplier laps at expected_lap_speed_mps).",
+    )
+    parser.add_argument(
+        "--episode-lap-multiplier",
+        type=float,
+        default=None,
+        help="Number of laps the auto-derived episode horizon should cover "
+        "(overrides config env.episode_lap_multiplier). Ignored if --episode-length "
+        "is set.",
+    )
+    parser.add_argument(
         "--opponent",
         type=str,
         default="none",
@@ -719,6 +771,30 @@ def parse_args() -> argparse.Namespace:
         "opponent). Only used when --opponent is not 'none'.",
     )
     parser.add_argument(
+        "--collision-scale",
+        type=float,
+        default=1.0,
+        help="Reward scale for the GT Sophy any-collision penalty (-collision_k on "
+        "car-car overlap). Only used when --opponent is not 'none'.",
+    )
+    parser.add_argument(
+        "--rear-end-scale",
+        type=float,
+        default=1.0,
+        help="Reward scale for the GT Sophy rear-end penalty Rr (-rear_end_k * "
+        "closing-speed^2 when colliding with an opponent ahead). 0.0 disables it. "
+        "Only used when --opponent is not 'none'.",
+    )
+    parser.add_argument(
+        "--collision-term-speed",
+        type=float,
+        default=None,
+        help="Closing-speed threshold (m/s) above which a car-car collision ends "
+        "the episode. Below it, low-speed contacts still incur penalties and contact "
+        "physics but the agent keeps driving. 0.0 terminates on any overlap. "
+        "Defaults to config env.collision_term_speed_mps.",
+    )
+    parser.add_argument(
         "--zero-tyre-slip-obs",
         action="store_true",
         default=False,
@@ -736,6 +812,14 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Enable delayed self-play (implies --opponent policy): snapshot the "
         "learner into a pool and refresh the frozen policy opponent periodically.",
+    )
+    parser.add_argument(
+        "--mixed-opponents",
+        action="store_true",
+        default=False,
+        help="Use the GT Sophy-style mixed opponent population: each env row is "
+        "randomly assigned scripted or self-play policy on reset (implies --self-play "
+        "so the policy snapshots refresh). Mix weights come from config opponent_mix.",
     )
     parser.add_argument(
         "--selfplay-snapshot-interval",
@@ -796,7 +880,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--buffer-capacity", type=int, default=100_000)
     parser.add_argument("--log-interval", type=int, default=100)
-    parser.add_argument("--wandb", action="store_true", default=False)
+    parser.add_argument(
+        "--wandb",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Log metrics to Weights & Biases (default: on; use --no-wandb to disable).",
+    )
     parser.add_argument(
         "--wandb-mode",
         type=str,
@@ -889,6 +978,13 @@ def main():
         show_viewer=False,
         enable_recording=False,
     )
+    log.info(
+        "Episode horizon: %.1fs -> %d control steps (track=%s, target_laps=%d)",
+        float(env_cfg["episode_length"]),
+        int(env.max_episode_steps),
+        args.track,
+        int(env_cfg.get("target_laps", 0)),
+    )
 
     models, trainer = build_models(cfg, device, alpha=args.alpha)
     buffer = NStepReplayBuffer(
@@ -911,7 +1007,7 @@ def main():
         load_init_checkpoint(args.init_ckpt, models, normalizer, device, log)
 
     selfplay_mgr: SelfPlayManager | None = None
-    if args.self_play:
+    if args.self_play or args.mixed_opponents:
         sp_cfg = cfg["selfplay"]
         selfplay_mgr = SelfPlayManager(
             pool_size=sp_cfg["pool_size"],
@@ -926,7 +1022,7 @@ def main():
         )
         selfplay_mgr.bootstrap_opponent(env)
 
-    use_1v1 = args.self_play or args.opponent != "none"
+    use_1v1 = args.self_play or args.mixed_opponents or args.opponent != "none"
     wandb_run = None
     if args.wandb:
         import wandb
@@ -1160,13 +1256,14 @@ def main():
                 if use_1v1:
                     log.info(
                         "  rewards: total[mean=%.4f min=%.4f max=%.4f] "
-                        "progress=%.4f passing=%.4f oob_penalty=%.4f tyre_slip=%.4f "
-                        "smooth=%.4f | nstep_buf_reward=%.4f mean_Q=%.4f",
+                        "progress=%.4f passing=%.4f collision=%.4f oob_penalty=%.4f "
+                        "tyre_slip=%.4f smooth=%.4f | nstep_buf_reward=%.4f mean_Q=%.4f",
                         diag.mean("reward/step"),
                         diag.vmin("reward/step"),
                         diag.vmax("reward/step"),
                         diag.mean("reward_term/progress"),
                         diag.mean("reward_term/passing"),
+                        diag.mean("reward_term/collision"),
                         diag.mean("reward_term/oob_penalty"),
                         diag.mean("reward_term/tyre_slip_penalty"),
                         diag.mean("reward_term/smoothness"),
@@ -1190,14 +1287,14 @@ def main():
                     )
                 log.info(
                     "  env: speed=%.3f opp_speed=%.3f lat_err=%.3f oob_frac=%.3f "
-                    "progress_ds=%.4f lap_count=%.3f | throttle[%.2f..%.2f] "
+                    "progress_ds=%.4f laps_completed=%d | throttle[%.2f..%.2f] "
                     "steer[%.2f..%.2f] obs_absmax=%.2f norm_obs_absmax=%.2f",
                     diag.mean("metric/speed_xy"),
                     diag.mean("metric/opp_speed"),
                     diag.mean("metric/lateral_error"),
                     diag.mean("metric/oob_mask"),
                     diag.mean("metric/progress_ds"),
-                    diag.mean("metric/lap_count"),
+                    int(diag.total("metric/laps_completed")),
                     diag.vmin("action/throttle"),
                     diag.vmax("action/throttle"),
                     diag.vmin("action/steer"),
@@ -1270,6 +1367,9 @@ def main():
                             "reward/total_min": diag.vmin("reward/step"),
                             "reward/total_max": diag.vmax("reward/step"),
                             "reward/progress": diag.mean("reward_term/progress"),
+                            "reward/collision": diag.mean(
+                                "reward_term/collision"
+                            ),
                             "reward/oob_penalty": diag.mean(
                                 "reward_term/oob_penalty"
                             ),
@@ -1284,6 +1384,7 @@ def main():
                             "env/oob_frac": diag.mean("metric/oob_mask"),
                             "env/progress_ds": diag.mean("metric/progress_ds"),
                             "env/lap_count": diag.mean("metric/lap_count"),
+                            "env/laps_completed": diag.total("metric/laps_completed"),
                             "action/throttle_max": diag.vmax("action/throttle"),
                             "action/steer_max": diag.vmax("action/steer"),
                             "obs/absmax": diag.vmax("obs/abs"),

@@ -162,6 +162,41 @@ def load_track_state(
     }
 
 
+def track_loop_length(centerline: np.ndarray) -> float:
+    """Closed-loop centerline length in meters (matches ``build_track_cache`` 'L')."""
+    cl = np.asarray(centerline, dtype=np.float64)
+    if np.linalg.norm(cl[0] - cl[-1]) > 1e-6:
+        cl = np.concatenate([cl, cl[0:1]], axis=0)
+    seg = cl[1:] - cl[:-1]
+    return float(np.linalg.norm(seg, axis=-1).sum())
+
+
+def episode_length_for_track(
+    track: str | None,
+    workspace_dir: str,
+    ref_lap_speed_mps: float = 3.5,
+    lap_multiplier: float = 3.0,
+    min_s: float = 60.0,
+) -> float:
+    """Episode length (seconds) sized to ``lap_multiplier`` laps at a reference pace.
+
+    GT Sophy base scenarios ran for a fixed 150 s; here we derive a comparable
+    multi-lap horizon from the actual centerline length so each track gets enough
+    time for several laps plus overtakes instead of the previous single-lap 45 s.
+
+    Reads only the centerline CSV (no Genesis tensors), so it is safe to call
+    before ``gs.init()`` during config construction.
+    """
+    data = resolve_track_data(track, workspace_dir)
+    if data is None or data.dtype.names is None:
+        raise ValueError(f"Could not parse track csv data from {track}")
+    centerline = np.stack([data["x_m"], data["y_m"]], axis=-1).astype(np.float32)
+    length_m = track_loop_length(centerline)
+    return max(
+        float(min_s), (length_m / float(ref_lap_speed_mps)) * float(lap_multiplier)
+    )
+
+
 def compute_track_boundaries(
     centerline: np.ndarray,
     w_tr_left: np.ndarray,

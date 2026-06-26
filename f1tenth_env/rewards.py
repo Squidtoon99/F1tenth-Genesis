@@ -67,6 +67,9 @@ def ensure_progress_delta(
         (~reset_mask) & (prev_s_flat > 0.9 * length) & (s < 0.1 * length) & (ds > 0.0)
     )
     lap_count_buf += lap_cross.to(dtype=lap_count_buf.dtype)
+    # Per-step lap-completion events (independent of target_laps) so the trainer can
+    # log an actual completion count instead of the step-averaged lap_count level.
+    reward_state["last_lap_cross"] = lap_cross.detach()
 
     reward_state["prev_s"] = s.detach().clone()
     reward_state["prev_step_counter"] = step_now.detach().clone()
@@ -176,6 +179,59 @@ def reward_passing(
     opp_ds = step_state["opp_progress_ds"]
     k = float(reward_cfg.get("passing_k", 5.0))
     return k * (ego_ds - opp_ds)
+
+
+def reward_collision(
+    step_state: dict[str, Any], reward_cfg: dict[str, Any]
+) -> torch.Tensor:
+    """GT Sophy any-collision penalty ``Rc = -k * c`` for car-to-car contact.
+
+    ``c`` is the binary overlap indicator (the same ego-frame box predicate used
+    for collision termination). The penalty fires on every step the cars overlap,
+    regardless of fault. Returns zeros when no opponent is present.
+    """
+    mask = step_state.get("car_collision")
+    if mask is None:
+        return torch.zeros_like(step_state["progress_ds"])
+    k = float(reward_cfg.get("collision_k", 5.0))
+    return -k * mask.to(dtype=step_state["progress_ds"].dtype)
+
+
+def reward_rear_end(
+    step_state: dict[str, Any], reward_cfg: dict[str, Any]
+) -> torch.Tensor:
+    """GT Sophy rear-end penalty ``Rr`` (Wurman et al., Nature 2022).
+
+    ``Rr = -k * c * 1(opp ahead) * ||v_ego - v_opp||^2``: it fires only when the
+    agent is in a car-car collision (same overlap predicate as ``Rc``) with an
+    opponent that is ahead of it on the centerline, and scales with the squared
+    closing speed (relative velocity magnitude) so high-speed rear-ends are
+    punished far harder than gentle taps. Returns zeros when no opponent is
+    present (1v0) or the velocity/arc-length state is unavailable.
+    """
+    mask = step_state.get("car_collision")
+    opp_s = step_state.get("opp_s")
+    opp_vel = step_state.get("opp_vel_world")
+    # World-frame ego velocity (NOT body-frame base_lin_vel) so the closing speed
+    # is computed in the same frame as opp_vel_world.
+    ego_vel = step_state.get("ego_vel_world")
+    if mask is None or opp_s is None or opp_vel is None or ego_vel is None:
+        return torch.zeros_like(step_state["progress_ds"])
+
+    ego_s = step_state["frenet"]["s"].reshape(-1)
+    length = step_state["frenet"]["L"]
+    gap = opp_s.reshape(-1) - ego_s
+    half = 0.5 * length
+    gap = torch.where(gap > half, gap - length, gap)
+    gap = torch.where(gap < -half, gap + length, gap)
+    opp_ahead = gap > 0.0
+
+    rel_v = ego_vel[:, :2] - opp_vel[:, :2]
+    closing_sq = (rel_v * rel_v).sum(dim=-1)
+
+    k = float(reward_cfg.get("rear_end_k", 5.0))
+    fire = mask.to(closing_sq.dtype) * opp_ahead.to(closing_sq.dtype)
+    return -k * fire * closing_sq
 
 
 def reward_progress(
@@ -319,6 +375,16 @@ def compute_rewards(
             step_state, reward_cfg, reward_state, episode_steps_buf
         )
 
+    # 1v1 collision penalty (gated like passing): GT Sophy any-collision term.
+    collision_enabled = "collision" in scales
+    if collision_enabled:
+        collision = reward_collision(step_state, reward_cfg)
+
+    # 1v1 rear-end penalty (gated like collision): GT Sophy Rr term.
+    rear_end_enabled = "rear_end" in scales
+    if rear_end_enabled:
+        rear_end = reward_rear_end(step_state, reward_cfg)
+
     # GT Sophy masks course progress whenever the agent is off course (anti
     # corner-cutting). Derive the mask directly from the boundary state: the
     # off-course penalty is ~v^2 and goes to zero at low speed, so it can no longer
@@ -341,6 +407,10 @@ def compute_rewards(
     smoothness_penalty *= scales.get("smoothness", 0.0)
     if passing_enabled:
         passing *= scales["passing"]
+    if collision_enabled:
+        collision *= scales["collision"]
+    if rear_end_enabled:
+        rear_end *= scales["rear_end"]
 
     # Single global knob to shrink overall reward magnitude (keeps the relative
     # balance between terms intact) so returns / critic targets stay O(1).
@@ -352,6 +422,10 @@ def compute_rewards(
     smoothness_penalty *= global_scale
     if passing_enabled:
         passing *= global_scale
+    if collision_enabled:
+        collision *= global_scale
+    if rear_end_enabled:
+        rear_end *= global_scale
 
     last_terms: dict[str, torch.Tensor] = {
         "progress": progress.clone(),
@@ -365,6 +439,12 @@ def compute_rewards(
     if passing_enabled:
         reward_buf += passing
         last_terms["passing"] = passing.clone()
+    if collision_enabled:
+        reward_buf += collision
+        last_terms["collision"] = collision.clone()
+    if rear_end_enabled:
+        reward_buf += rear_end
+        last_terms["rear_end"] = rear_end.clone()
 
     reward_state["last_reward_terms"] = last_terms
     return reward_buf, step_state

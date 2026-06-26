@@ -18,7 +18,8 @@
       "topics": {
         "/map": { "visible": true },
         "/rl/track/markers": { "visible": true, "showOutlines": false },
-        "/rl/obs_debug/future_points": { "visible": false },
+        "/rl/obs_debug/future_points": { "visible": true },
+        "/rl/obs_debug/opponent": { "visible": true },
         "/scan": { "visible": false },
         "/ego_racecar/odom": { "visible": true }
       },
@@ -41,6 +42,19 @@
       "showLegend": true,
       "xAxisVal": "timestamp"
     },
+    "Plot!obs_debug": {
+      "paths": [
+        { "value": "/rl/obs_debug/scalars.data[10]", "label": "lateral_err (m)" },
+        { "value": "/rl/obs_debug/scalars.data[11]", "label": "contact_flag" },
+        { "value": "/rl/obs_debug/scalars.data[13]", "label": "min_left_margin (m)" },
+        { "value": "/rl/obs_debug/scalars.data[14]", "label": "min_right_margin (m)" },
+        { "value": "/rl/obs_debug/scalars.data[12]", "label": "speed (m/s)" },
+        { "value": "/rl/obs_debug/scalars.data[6]", "label": "last_steer" },
+        { "value": "/rl/obs_debug/scalars.data[5]", "label": "last_throttle" }
+      ],
+      "showLegend": true,
+      "xAxisVal": "timestamp"
+    },
     "RawMessages!drive": {
       "topicPath": "/drive.drive"
     }
@@ -51,12 +65,17 @@
   "layout": {
     "first": "3D!rlview",
     "second": {
-      "first": "Plot!metrics",
+      "first": "Plot!obs_debug",
       "second": {
-        "first": "Plot!action",
-        "second": "RawMessages!drive",
+        "first": "Plot!metrics",
+        "second": {
+          "first": "Plot!action",
+          "second": "RawMessages!drive",
+          "direction": "column",
+          "splitPercentage": 60
+        },
         "direction": "column",
-        "splitPercentage": 60
+        "splitPercentage": 40
       },
       "direction": "column",
       "splitPercentage": 40

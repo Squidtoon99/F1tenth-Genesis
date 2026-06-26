@@ -23,6 +23,8 @@ TOPIC_TRACK_MARKERS = "/rl/track/markers"
 TOPIC_OBSERVATION = "/rl/observation"
 TOPIC_ACTION = "/rl/action"
 TOPIC_FUTURE_POINTS = "/rl/obs_debug/future_points"
+TOPIC_OBS_DEBUG_SCALARS = "/rl/obs_debug/scalars"
+TOPIC_OBS_DEBUG_OPPONENT = "/rl/obs_debug/opponent"
 TOPIC_METRICS = "/rl/metrics"
 
 # --- Frames -------------------------------------------------------------------
@@ -74,6 +76,35 @@ METRICS_LATERAL_ERROR = 3
 METRICS_OOB_FLAG = 4
 METRICS_SPEED = 5
 
+# obs_debug scalar layout (/rl/obs_debug/scalars). Decoded by obs_debug_node from
+# the raw /rl/observation vector so all fields can be plotted as time series. See
+# INTERFACES.md for the full table; keep these indices in sync there.
+OBS_DEBUG_LIN_VEL_X = 0
+OBS_DEBUG_LIN_VEL_Y = 1
+OBS_DEBUG_ANG_VEL_Z = 2
+OBS_DEBUG_LIN_ACC_X = 3
+OBS_DEBUG_LIN_ACC_Y = 4
+OBS_DEBUG_LAST_THROTTLE = 5
+OBS_DEBUG_LAST_STEER = 6
+OBS_DEBUG_PROGRESS_COS = 7
+OBS_DEBUG_PROGRESS_SIN = 8
+OBS_DEBUG_HEADING_ERR = 9
+OBS_DEBUG_LATERAL_ERR = 10
+OBS_DEBUG_CONTACT_FLAG = 11
+OBS_DEBUG_SPEED = 12
+OBS_DEBUG_MIN_LEFT_MARGIN = 13
+OBS_DEBUG_MIN_RIGHT_MARGIN = 14
+OBS_DEBUG_OPP_REL_X = 15
+OBS_DEBUG_OPP_REL_Y = 16
+OBS_DEBUG_OPP_REL_VX = 17
+OBS_DEBUG_OPP_REL_VY = 18
+OBS_DEBUG_OPP_GAP_NORM = 19
+OBS_DEBUG_OPP_LATERAL = 20
+OBS_DEBUG_OPP_PRESENT = 21
+OBS_DEBUG_MAX_SLIP_RATIO = 22
+OBS_DEBUG_MAX_SLIP_ANGLE = 23
+OBS_DEBUG_LEN = 24
+
 # --- Policy / vehicle constants (DEFAULT_CONFIG in config.py) -----------------
 MAX_SPEED = 15.0
 MAX_STEER = 0.44
@@ -103,6 +134,7 @@ def default_obs_cfg(enable_opponent_obs: bool = False) -> dict:
         "base_num_obs": NUM_OBS_BASE,
         "enable_opponent_obs": enable_opponent_obs,
         "opponent_obs_dim": OPPONENT_OBS_DIM,
+        "zero_opponent_obs": False,
         "obs_scales": {
             "lin_vel": OBS_LIN_VEL_SCALE,
             "ang_vel": OBS_ANG_VEL_SCALE,

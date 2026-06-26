@@ -111,6 +111,19 @@ std::array<double, 8> computeTyreSlip(
   return out;
 }
 
+double lagAlpha(double control_dt, double t_delta)
+{
+  t_delta = std::max(t_delta, 1e-9);
+  control_dt = std::max(control_dt, 1e-9);
+  return control_dt / (t_delta + control_dt);
+}
+
+double stepFirstOrderLag(double state, double target, double alpha)
+{
+  alpha = clampd(alpha, 0.0, 1.0);
+  return state + alpha * (target - state);
+}
+
 std::pair<double, double> mapActionToDrive(
   double throttle,
   double steering,
@@ -385,40 +398,46 @@ std::vector<float> TrackObservationBuilder::build(
   if (cfg_.enable_opponent_obs) {
     const int opp_base = 380;
     if (opp_base + cfg_.opponent_obs_dim <= cfg_.num_obs) {
-      const double present_f = opp.present ? 1.0 : 0.0;
-      // Ego world-frame velocity from body velocity + yaw (obs_opponent rotates
-      // the relative world velocity into the ego frame).
-      const double ego_vx_w = cos_y * st.vx - sin_y * st.vy;
-      const double ego_vy_w = sin_y * st.vx + cos_y * st.vy;
+      if (cfg_.zero_opponent_obs) {
+        for (int i = 0; i < cfg_.opponent_obs_dim; ++i) {
+          obs[opp_base + i] = 0.0f;
+        }
+      } else {
+        const double present_f = opp.present ? 1.0 : 0.0;
+        // Ego world-frame velocity from body velocity + yaw (obs_opponent rotates
+        // the relative world velocity into the ego frame).
+        const double ego_vx_w = cos_y * st.vx - sin_y * st.vy;
+        const double ego_vy_w = sin_y * st.vx + cos_y * st.vy;
 
-      const double dx = opp.pos_x - st.pos_x;
-      const double dy = opp.pos_y - st.pos_y;
-      const double rel_x = cos_y * dx + sin_y * dy;
-      const double rel_y = -sin_y * dx + cos_y * dy;
+        const double dx = opp.pos_x - st.pos_x;
+        const double dy = opp.pos_y - st.pos_y;
+        const double rel_x = cos_y * dx + sin_y * dy;
+        const double rel_y = -sin_y * dx + cos_y * dy;
 
-      const double dvx = opp.vx - ego_vx_w;
-      const double dvy = opp.vy - ego_vy_w;
-      const double rel_vx = cos_y * dvx + sin_y * dvy;
-      const double rel_vy = -sin_y * dvx + cos_y * dvy;
+        const double dvx = opp.vx - ego_vx_w;
+        const double dvy = opp.vy - ego_vy_w;
+        const double rel_vx = cos_y * dvx + sin_y * dvy;
+        const double rel_vy = -sin_y * dvx + cos_y * dvy;
 
-      const LateralInfo opp_lat = lateral(opp.pos_x, opp.pos_y);
-      const double L = std::max(fr.L, 1e-6);
-      double gap = opp_lat.s - fr.s;
-      const double half = 0.5 * L;
-      if (gap > half) {
-        gap -= L;
-      } else if (gap < -half) {
-        gap += L;
+        const LateralInfo opp_lat = lateral(opp.pos_x, opp.pos_y);
+        const double L = std::max(fr.L, 1e-6);
+        double gap = opp_lat.s - fr.s;
+        const double half = 0.5 * L;
+        if (gap > half) {
+          gap -= L;
+        } else if (gap < -half) {
+          gap += L;
+        }
+        const double gap_norm = gap / std::max(half, 1e-6);
+
+        obs[opp_base + 0] = static_cast<float>(rel_x * present_f);
+        obs[opp_base + 1] = static_cast<float>(rel_y * present_f);
+        obs[opp_base + 2] = static_cast<float>(rel_vx * present_f);
+        obs[opp_base + 3] = static_cast<float>(rel_vy * present_f);
+        obs[opp_base + 4] = static_cast<float>(gap_norm * present_f);
+        obs[opp_base + 5] = static_cast<float>(opp_lat.ey * present_f);
+        obs[opp_base + 6] = static_cast<float>(present_f);
       }
-      const double gap_norm = gap / std::max(half, 1e-6);
-
-      obs[opp_base + 0] = static_cast<float>(rel_x * present_f);
-      obs[opp_base + 1] = static_cast<float>(rel_y * present_f);
-      obs[opp_base + 2] = static_cast<float>(rel_vx * present_f);
-      obs[opp_base + 3] = static_cast<float>(rel_vy * present_f);
-      obs[opp_base + 4] = static_cast<float>(gap_norm * present_f);
-      obs[opp_base + 5] = static_cast<float>(opp_lat.ey * present_f);
-      obs[opp_base + 6] = static_cast<float>(present_f);
     }
   }
 

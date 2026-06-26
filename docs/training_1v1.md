@@ -38,10 +38,26 @@ as intended.
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--opponent {none,scripted,policy}` | `none` | `none` = solo/1v0. `scripted` = centerline-following pace car (recommended). `policy` = frozen-policy opponent; use with `--self-play` for delayed snapshot self-play. |
+| `--mixed-opponents` | off | GT Sophy-style mixed opponent population: each env row is randomly assigned scripted or self-play policy on reset. Implies `--self-play` (the policy half refreshes from the snapshot pool). Mix weights come from `config.env.opponent_mix`. |
 | `--opponent-target-speed FLOAT` | `3.0` | Scripted opponent target speed (m/s). Keep it **below** the ego's achievable pace so an overtake is feasible (too fast → the ego can never pass and `passing` never goes positive). |
 | `--opponent-spawn-gap FLOAT` | `7.0` | Meters the opponent spawns ahead of the ego along the centerline at every reset. Smaller = collisions/overtakes happen sooner; larger = more approach room. |
 | `--passing-scale FLOAT` | `0.5` | Reward scale on the passing term `k * (ego_ds - opp_ds)`. Positive when the ego gains track position. Raise it to push overtaking harder; lower it if it dominates clean-driving terms. Ignored when `--opponent none`. |
+| `--collision-scale FLOAT` | `1.0` | Reward scale on the GT Sophy any-collision term `Rc = -collision_k` (binary, per-step penalty on car-car box overlap, regardless of fault). Ignored when `--opponent none`. |
+| `--rear-end-scale FLOAT` | `1.0` | Reward scale on the GT Sophy rear-end term `Rr = -rear_end_k * ‖v_ego - v_opp‖²`, applied when the ego collides with an opponent that is **ahead** on the centerline (scales with squared closing speed). `0.0` disables it. Ignored when `--opponent none`. |
+| `--collision-term-speed FLOAT` | config (`2.0`) | Closing-speed threshold (m/s, world-frame `‖v_ego - v_opp‖`) above which a car-car collision **ends** the episode. Below it, low-speed contacts still incur the collision/rear-end penalties and full contact physics but the agent keeps driving — so it learns to recover from light taps instead of resetting on every minor rub. `0.0` = terminate on any overlap (legacy). Ignored when `--opponent none`. |
 | `--opponent-ckpt PATH` | `None` | Only for `--opponent policy`: the frozen actor checkpoint to drive the opponent. |
+
+### Episode horizon flags
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--episode-length FLOAT` | auto | Episode horizon in **seconds**. Default: derived from the track centerline length (`episode_lap_multiplier` laps at `expected_lap_speed_mps`), so each track gets multi-lap racing time instead of the old single-lap 45 s. |
+| `--episode-lap-multiplier FLOAT` | `3.0` | Number of laps the auto-derived horizon should cover. Ignored if `--episode-length` is set. |
+
+The episode now ends on the **time** horizon (config `target_laps = 0`, disabling
+single-lap cutoff) like GT Sophy's base scenarios, giving the agent multi-lap traffic
+and overtaking exposure. The startup log prints the resolved horizon and control-step
+count. Set `target_laps > 0` in [config.py](../config.py) to cap by lap count instead.
 
 All the standard trainer flags still apply (`--num-envs`, `--total-steps`,
 `--batch-size`, `--alpha`, `--device`, `--precision`, `--seed`, `--wandb`, …). The
@@ -62,10 +78,19 @@ under the `env` / `obs` / `reward` sections and can be overridden there if neede
   is **gated** by the presence of the `passing` reward scale, so the solo reward is
   byte-for-byte unchanged. A config-gated `collision` term (`collision_k` × overlap
   mask) adds a negative reward on contact when enabled for 1v1 training.
-- **Termination**: the episode ends on car-to-car overlap detected by an anisotropic
-  ego-frame box using `car_length` (0.46 m), `car_width` (0.30 m), and optional
-  `collision_margin_m` (see `terminations.collision_mask`). Episode reset forfeits
-  future progress reward in addition to any configured collision penalty.
+- **Rear-end penalty (`Rr`)**: the GT Sophy rear-end term (Wurman et al., Nature 2022)
+  `-rear_end_k * ‖v_ego - v_opp‖²` fires only when the ego is in a car-car collision
+  with an opponent that is **ahead** on the centerline, scaling with the squared
+  closing speed so high-speed rear-ends are punished hardest. It stacks on top of `Rc`
+  and is gated by the `rear_end` reward scale (`--rear-end-scale`).
+- **Termination**: car-to-car overlap is detected by an anisotropic ego-frame box
+  using `car_length` (0.46 m), `car_width` (0.30 m), and optional `collision_margin_m`
+  (see `terminations.collision_mask`). The episode ends **only when the closing speed
+  `‖v_ego - v_opp‖` exceeds `collision_term_speed_mps`** (default 2.0 m/s, configurable
+  via `--collision-term-speed`); lower-speed contacts keep driving but still pay the
+  collision/rear-end penalties and undergo full contact physics. Episode reset forfeits
+  future progress reward in addition to any configured collision penalty. Set
+  `collision_term_speed_mps = 0.0` to terminate on any overlap.
 
 ## Verify before a long run
 
@@ -77,10 +102,15 @@ triggers, and writes a passing-reward plot to `outputs/verify_1v1/`:
 # Genesis's numba cache cannot write into site-packages under some sandboxes;
 # point it at a writable dir.
 NUMBA_CACHE_DIR=/tmp/numba_cache python scripts/verify_1v1.py --num-envs 16 --steps 250
+
+# Verify the mixed opponent population (per-row scripted + policy) as well:
+NUMBA_CACHE_DIR=/tmp/numba_cache python scripts/verify_1v1.py --opponent mixed --num-envs 16 --steps 400
 ```
 
-Expected: `obs_shape=(16, 387)`, `collisions > 0`, and the 1v0 regression check
-reports `obs_shape=(16, 380)`.
+Expected: `obs_shape=(16, 387)`, `collisions > 0`, a non-zero `rear_end_min` on the
+chase rollout, and the 1v0 regression check reports `obs_shape=(16, 380)`. The
+`--opponent mixed` run additionally confirms both opponent modes are assigned and
+scripted-mode rows reach cruise speed.
 
 You can also run the deterministic unit tests (no simulator needed):
 
@@ -110,3 +140,26 @@ with `--selfplay-snapshot-interval`, `--selfplay-refresh-interval`, and
 `--selfplay-pool-size`. Warm-start with `--init-ckpt` to seed both the learner and
 the opponent pool. The checkpoint format (`actor` + `obs_norm`) is what
 `PolicyOpponent` loads. The system is hard-limited to a single opponent (1v1).
+
+## Mixed opponent population (`--mixed-opponents`)
+
+GT Sophy trains against a **mixed population** (built-in slower AI plus curated policy
+snapshots) rather than pure self-play, which the paper found important to avoid
+overfitting to a single opponent style. The hard-1v1 analogue here assigns each
+parallel env row, on reset, to either the scripted centerline follower or the
+frozen self-play policy:
+
+```bash
+python standalone_trainer.py \
+  --mixed-opponents \
+  --rear-end-scale 1.0 \
+  --init-ckpt outputs/runs/foundation_1v1_v1/checkpoints/ckpt_500000.pt \
+  --num-envs 512 --total-steps 2000000 \
+  --run-id mixed_selfplay_v1
+```
+
+`--mixed-opponents` sets `opponent_strategy = "mixed"` and implies `--self-play`, so
+the policy half of the population is refreshed from the learner snapshot pool exactly
+like pure self-play (`env.refresh_opponent_policy` forwards snapshots to the inner
+policy). The per-row sampling weights live in `config.env.opponent_mix`
+(`scripted_weight`, `policy_weight`); warm-start the policy half with `--init-ckpt`.

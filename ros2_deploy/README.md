@@ -172,6 +172,7 @@ car instead of the five sim nodes:
 | `policy_inference` | `f1tenth_rl_agent` | Python | `/rl/observation` -> `/rl/action` (applies the checkpoint's `obs_norm`) |
 | `drive` | `f1tenth_rl_vehicle` | C++ | `/rl/action` -> `/drive` (Ackermann) with a stop watchdog |
 | `opponent_detector` | `f1tenth_rl_vehicle` | C++ | `/scan` + ego pose -> `/rl/opponent/odom` (1v1 only, `enable_opponent:=true`) |
+| `obs_debug` | `f1tenth_rl_agent` | Python | `/rl/observation` -> `/rl/obs_debug/scalars` + markers (read-only diagnostics, `enable_obs_debug:=true`, default on) |
 
 `vehicle_obs` merges the sim `track_server` + `observation_builder` (it loads the
 training centerline CSV directly), so there is no `/rl/track/*` plumbing on the car.
@@ -189,6 +190,32 @@ source install/setup.bash
 The C++ parity test (`test_rl_obs_core`) compares `rl_obs_core` against a fixture
 generated from the Python pipeline (`test/obs_fixture.txt`), guaranteeing the on-car
 observation equals the one the policy trained on within `1e-4`.
+
+## Diagnosing wall collisions (obs_debug)
+
+`bringup_vehicle.launch.py` runs the read-only `obs_debug` node by default
+(`enable_obs_debug:=false` to disable). It decodes the exact `/rl/observation` the
+policy sees and republishes it for plotting and 3D overlay, without touching the
+drive command:
+
+- `/rl/obs_debug/scalars` (`Float32MultiArray`, 24 fields) -- lateral error, contact
+  flag, speed, last action, and the **minimum observed corridor margins** ahead
+  (see `INTERFACES.md` for the index table).
+- `/rl/obs_debug/future_points` -- the center/left/right future track curves the
+  policy sees, transformed into the `map` frame.
+- `/rl/obs_debug/opponent` -- a sphere at the opponent position reconstructed from the
+  ego-frame relative offset (only when the presence flag is set).
+
+Open `assets/foxglove_layout.json` in Foxglove (connected to the car's ROS bridge)
+and watch the `obs_debug` plot when the car hits a wall:
+
+- **`contact_flag`** rising to 1 before impact means the policy already perceives the
+  wall (a control/timing problem, not a perception one).
+- **`min_left_margin` / `min_right_margin`** near zero while steering is saturated means
+  the policy is driving outside the corridor it perceives.
+- **`lateral_err`** diverging while the margins stay healthy points at a localization or
+  track-frame mismatch -- confirm by checking that `/rl/obs_debug/future_points` overlays
+  the real track in the 3D panel. Misaligned future points are the most common root cause.
 
 ## 1v1 opponent detection
 

@@ -18,7 +18,3 @@ rerun-sdk
 # local macOS installs succeed; on Linux/HPC the extra pulls a matching
 # TensorFlow. Build reverb from source if you need the training stack on macOS.
 dm-reverb[tensorflow]; sys_platform == "linux"
-# mpi4py wheels need a system MPI runtime at import time; the HPC provides one
-# (mpich), but macOS does not by default. Scope it to Linux with reverb so the
-# distributed-training stack installs together and macOS installs stay clean.
-mpi4py; sys_platform == "linux"

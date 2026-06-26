@@ -24,7 +24,12 @@ from .car import (
     setup_entity_controls,
 )
 from .observations import build_observation, obs_opponent
-from .opponents import OpponentContext, PolicyOpponent, make_opponent
+from .opponents import (
+    MixedOpponentController,
+    OpponentContext,
+    PolicyOpponent,
+    make_opponent,
+)
 from .rewards import (
     compute_rewards,
     init_reward_state,
@@ -752,6 +757,25 @@ class F1tenthEnv:
         if self.opponent is not None:
             opp_ss = self._opponent_step_state(self.opp_base_pos)
             step_state["opp_s"] = opp_ss["frenet"]["s"]
+            # World-frame ego and opponent velocities for the GT Sophy rear-end
+            # penalty (Rr), which scales with the squared closing speed
+            # ||v_ego - v_opp||^2. Both must be in the same (world) frame; note
+            # base_lin_vel is the body-frame velocity and must not be used here.
+            step_state["ego_vel_world"] = self.base_vel_world
+            step_state["opp_vel_world"] = self.opp_vel_world
+            # Same ego-frame box overlap predicate used for collision termination,
+            # exposed to the reward path for the GT Sophy any-collision penalty.
+            ego_yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
+            step_state["car_collision"] = collision_mask(
+                self.base_pos[:, :2],
+                self.opp_base_pos[:, :2],
+                ego_yaw,
+                car_length=float(self.env_cfg.get("car_length", 0.46)),
+                car_width=float(self.env_cfg.get("car_width", 0.30)),
+                collision_margin_m=float(
+                    self.env_cfg.get("collision_margin_m", 0.0)
+                ),
+            )
         self.reward_buf, self._step_state = compute_rewards(
             step_state=step_state,
             reward_cfg=self.reward_cfg,
@@ -779,12 +803,15 @@ class F1tenthEnv:
             )
         )
 
-        # Collision termination (1v1): anisotropic ego-frame box overlap.
+        # Collision termination (1v1): anisotropic ego-frame box overlap, gated by
+        # closing speed so only high-speed impacts end the episode. Low-speed taps
+        # still incur the collision/rear-end penalties and contact physics but let
+        # the agent keep driving.
         if self.opponent is not None and bool(
             self.env_cfg.get("term_on_collision", True)
         ):
             ego_yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
-            collision = collision_mask(
+            overlap = collision_mask(
                 self.base_pos[:, :2],
                 self.opp_base_pos[:, :2],
                 ego_yaw,
@@ -794,6 +821,14 @@ class F1tenthEnv:
                     self.env_cfg.get("collision_margin_m", 0.0)
                 ),
             )
+            term_speed = float(self.env_cfg.get("collision_term_speed_mps", 0.0))
+            if term_speed > 0.0:
+                closing_speed = torch.linalg.norm(
+                    self.base_vel_world[:, :2] - self.opp_vel_world[:, :2], dim=-1
+                )
+                collision = overlap & (closing_speed > term_speed)
+            else:
+                collision = overlap
             self.reset_buf = self.reset_buf | collision
             self.extras["termination"]["collision"] = collision.to(dtype=gs.tc_float)
 
@@ -817,6 +852,10 @@ class F1tenthEnv:
             "speed_xy": speed_xy,
             "episode_steps": self.episode_steps_buf.to(dtype=gs.tc_float),
             "lap_count": self.lap_count_buf.to(dtype=gs.tc_float),
+            "laps_completed": self.reward_state.get(
+                "last_lap_cross",
+                torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device),
+            ).to(dtype=gs.tc_float),
         }
         if self.opponent is not None:
             opp_ss = self._opponent_step_state(self.opp_base_pos)
@@ -1077,8 +1116,12 @@ class F1tenthEnv:
         obs_mean: torch.Tensor,
         obs_var: torch.Tensor,
     ) -> None:
-        """Hot-swap the policy opponent's weights and obs-norm stats (self-play)."""
-        if not isinstance(self.opponent_ctrl, PolicyOpponent):
+        """Hot-swap the policy opponent's weights and obs-norm stats (self-play).
+
+        Works for a plain PolicyOpponent and for the MixedOpponentController, which
+        forwards the snapshot to its inner policy.
+        """
+        if not isinstance(self.opponent_ctrl, (PolicyOpponent, MixedOpponentController)):
             return
         self.opponent_ctrl.load_snapshot(state_dict, obs_mean, obs_var)
 

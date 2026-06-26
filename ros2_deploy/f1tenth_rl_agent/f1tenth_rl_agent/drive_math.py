@@ -28,3 +28,20 @@ def map_action_to_drive(
 
     steering_angle = steering * max_steer
     return speed, steering_angle
+
+
+def lag_alpha(control_dt: float, t_delta: float) -> float:
+    """First-order lag blend factor matching ``F1tenthEnv`` steer dynamics.
+
+    ``steer_lag_alpha = control_dt / (t_delta + control_dt)`` with training
+    defaults (10 Hz, ``t_delta=0.1``) this is 0.5 per control step.
+    """
+    t_delta = max(float(t_delta), 1e-9)
+    control_dt = max(float(control_dt), 1e-9)
+    return control_dt / (t_delta + control_dt)
+
+
+def step_first_order_lag(state: float, target: float, alpha: float) -> float:
+    """Advance a scalar first-order lag toward ``target``."""
+    alpha = max(0.0, min(1.0, float(alpha)))
+    return state + alpha * (target - state)

@@ -36,6 +36,9 @@ struct ObsConfig
   // (num_obs becomes 387). Off by default to preserve the solo deploy.
   bool enable_opponent_obs = false;
   int opponent_obs_dim = 7;
+  // Force [380:387] to zeros (1v0 sentinel) even when enable_opponent_obs is
+  // true, so a 387-dim checkpoint can run without a working opponent detector.
+  bool zero_opponent_obs = false;
 };
 
 // Opponent estimate in the map frame. Velocity is world-frame (the obs block
@@ -114,6 +117,10 @@ std::array<double, 8> computeTyreSlip(
   const std::array<double, 4> & spin_rate,
   double wheel_radius,
   double slip_eps = 0.1);
+
+// First-order lag helpers (match F1tenthEnv steer_state / t_delta).
+double lagAlpha(double control_dt, double t_delta);
+double stepFirstOrderLag(double state, double target, double alpha);
 
 // Map a policy action to (speed_mps, steering_angle_rad). Port of
 // drive_math.map_action_to_drive. brake_behavior is "stop" or "reverse".

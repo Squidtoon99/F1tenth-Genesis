@@ -30,6 +30,10 @@ public:
     speed_limit_mps_ = declare_parameter<double>("speed_limit_mps", 15.0);
     watchdog_timeout_s_ = declare_parameter<double>("watchdog_timeout_s", 0.5);
     brake_behavior_ = declare_parameter<std::string>("brake_behavior", "stop");
+    enable_output_filter_ = declare_parameter<bool>("enable_output_filter", true);
+    t_delta_ = declare_parameter<double>("t_delta", 0.1);
+    control_dt_ = declare_parameter<double>("control_dt", 0.1);
+    steer_lag_alpha_ = lagAlpha(control_dt_, t_delta_);
     const std::string action_topic =
       declare_parameter<std::string>("action_topic", "/rl/action");
     const std::string drive_topic = declare_parameter<std::string>("drive_topic", "/drive");
@@ -46,8 +50,10 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "drive ready: max_speed=%.2f max_steer=%.3f speed_limit=%.2f watchdog=%.2fs",
-      max_speed_, max_steer_, speed_limit_mps_, watchdog_timeout_s_);
+      "drive ready: max_speed=%.2f max_steer=%.3f speed_limit=%.2f watchdog=%.2fs "
+      "output_filter=%s t_delta=%.3f alpha=%.3f",
+      max_speed_, max_steer_, speed_limit_mps_, watchdog_timeout_s_,
+      enable_output_filter_ ? "on" : "off", t_delta_, steer_lag_alpha_);
   }
 
 private:
@@ -73,6 +79,10 @@ private:
     if (speed > speed_limit_mps_) {
       speed = speed_limit_mps_;
     }
+    if (enable_output_filter_) {
+      filtered_steer_ = stepFirstOrderLag(filtered_steer_, steering_angle, steer_lag_alpha_);
+      steering_angle = filtered_steer_;
+    }
     publishDrive(speed, steering_angle);
     last_action_time_ = now();
     have_action_ = true;
@@ -85,6 +95,7 @@ private:
     }
     const double elapsed = (now() - last_action_time_).seconds();
     if (elapsed > watchdog_timeout_s_) {
+      filtered_steer_ = 0.0;
       publishDrive(0.0, 0.0);
     }
   }
@@ -100,6 +111,11 @@ private:
   double watchdog_timeout_s_ = 0.5;
   std::string brake_behavior_ = "stop";
   std::string frame_id_ = "base_link";
+  bool enable_output_filter_ = true;
+  double t_delta_ = 0.1;
+  double control_dt_ = 0.1;
+  double steer_lag_alpha_ = 0.5;
+  double filtered_steer_ = 0.0;
 
   bool have_action_ = false;
   rclcpp::Time last_action_time_;

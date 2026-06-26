@@ -91,6 +91,40 @@ opponent is absent. This matches `f1tenth_env.observations.obs_opponent`.
 ### `/rl/obs_debug/future_points` - `visualization_msgs/MarkerArray`
 - Frame `map`. The future center/left/right points transformed back to world for visualization.
 
+### `/rl/obs_debug/scalars` - `std_msgs/Float32MultiArray`
+- `data` length **24**, decoded by `obs_debug_node` directly from `/rl/observation` so every
+  field the policy sees can be plotted as a time series. Indices mirror `interfaces.py`
+  (`OBS_DEBUG_*`):
+
+| Index | Field | Source (obs slice) |
+| --- | --- | --- |
+| `0:2` | `lin_vel_x`, `lin_vel_y` | `[0:2]` |
+| `2` | `ang_vel_z` | `[2]` |
+| `3:5` | `lin_acc_x`, `lin_acc_y` | `[3:5]` |
+| `5:7` | `last_throttle`, `last_steer` | `[5:7]` |
+| `7:9` | `progress_cos`, `progress_sin` | `[7:9]` |
+| `9` | `heading_err` | `[9]` |
+| `10` | `lateral_err` | `[10]` |
+| `11` | `contact_flag` | `[11]` |
+| `12` | `speed` (derived `hypot(vx, vy)`) | `[0:2]` |
+| `13` | `min_left_margin` (m, observed corridor ahead) | derived from `[12:372]` |
+| `14` | `min_right_margin` (m, observed corridor ahead) | derived from `[12:372]` |
+| `15:22` | opponent block (`rel_x, rel_y, rel_vx, rel_vy, gap_norm, lateral, present`) | `[380:387]` |
+| `22` | `max_slip_ratio` (max abs of first 4 slip values) | `[372:376]` |
+| `23` | `max_slip_angle` (max abs of last 4 slip values) | `[376:380]` |
+
+- The corridor margins are computed in the **ego frame**: the future block is reshaped to
+  `(3, 60, 2)` (center / left / right), and per sample `k` the margins are
+  `left[k].y - center[k].y` and `center[k].y - right[k].y`; the published value is the
+  minimum over all 60 samples. They show how tight the corridor the policy perceives is.
+- The opponent fields are zero when the opponent obs is masked or absent (presence flag at
+  index 21 is `0.0`).
+
+### `/rl/obs_debug/opponent` - `visualization_msgs/Marker`
+- Frame `map`. A sphere at the opponent position reconstructed from the ego-frame relative
+  position in the observation, published only when the presence flag is set; otherwise a
+  `DELETE` marker. Debug only.
+
 ### `/rl/metrics` - `std_msgs/Float32MultiArray`
 - `data` length **6**: `[lap_count, last_lap_time_s, max_progress_ratio, lateral_error_m, oob_flag, speed_mps]`.
 

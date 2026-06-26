@@ -6,6 +6,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
 VENV_PYTHON="$ROOT/venv/bin/python"
 TRAINER="$ROOT/standalone_trainer.py"
 CHAIN_LOG="$ROOT/outputs/irl_training_chain.log"
@@ -16,6 +23,7 @@ STAGE_1V0_RUN_ID="clean_1v0_v1"
 STAGE_1V1_RUN_ID="clean_1v1_v1"
 STAGE_SELFPLAY_RUN_ID="selfplay_clean_v1"
 TOTAL_STEPS=500000
+WANDB_GROUP="${WANDB_GROUP:-irl_mac_$(date +%Y-%m-%d)}"
 
 DRY_RUN=false
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -110,6 +118,9 @@ run_training_stage() {
     --run-id "$run_id"
     --ckpt-interval 10000
     --init-ckpt "$init_ckpt"
+    --wandb
+    --wandb-mode online
+    --wandb-group "$WANDB_GROUP"
   )
   cmd+=("${extra_args[@]}")
 

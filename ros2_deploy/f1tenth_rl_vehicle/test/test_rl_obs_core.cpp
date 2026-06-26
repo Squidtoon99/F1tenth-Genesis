@@ -225,6 +225,36 @@ TEST(OpponentObs, SentinelAndPresence)
   EXPECT_GT(obs[384], 0.0f);                  // gap_norm: opponent ahead along track
 }
 
+TEST(OpponentObs, ZeroMaskForcesSentinel)
+{
+  const CircleTrack t = makeCircle(20.0, 120, 1.5);
+  ObsConfig cfg;
+  cfg.enable_opponent_obs = true;
+  cfg.zero_opponent_obs = true;
+  cfg.num_obs = 387;
+  TrackObservationBuilder builder(t.xs, t.ys, t.wl, t.wr, cfg);
+
+  VehicleState st;
+  st.pos_x = 20.0;
+  st.pos_y = 0.0;
+  st.yaw = M_PI / 2.0;
+  st.vx = 3.0;
+
+  OpponentState opp;
+  opp.present = true;
+  const double th = 0.15;
+  opp.pos_x = 20.0 * std::cos(th);
+  opp.pos_y = 20.0 * std::sin(th);
+  opp.vx = 1.0;
+  opp.vy = 0.5;
+
+  std::vector<float> obs = builder.build(st, opp);
+  ASSERT_EQ(static_cast<int>(obs.size()), 387);
+  for (int i = 380; i < 387; ++i) {
+    EXPECT_FLOAT_EQ(obs[i], 0.0f) << "masked block index " << i;
+  }
+}
+
 TEST(OpponentDetectorTest, Clustering)
 {
   const CircleTrack t = makeCircle(20.0, 120, 1.5);
@@ -359,6 +389,13 @@ TEST(OpponentDetectorTest, WallNeverConfirms)
     res = det.update(blobBeams(21.4, 0.0, 5, 0.05), 0.0, 0.0, 0.1 * k);
   }
   EXPECT_FALSE(res.present);
+}
+
+TEST(RlObsCore, LagFilter)
+{
+  EXPECT_NEAR(f1tenth_rl_vehicle::lagAlpha(0.1, 0.1), 0.5, 1e-9);
+  EXPECT_NEAR(f1tenth_rl_vehicle::stepFirstOrderLag(0.0, 1.0, 0.5), 0.5, 1e-9);
+  EXPECT_NEAR(f1tenth_rl_vehicle::stepFirstOrderLag(0.5, 1.0, 0.5), 0.75, 1e-9);
 }
 
 TEST(RlObsCore, MapActionToDrive)

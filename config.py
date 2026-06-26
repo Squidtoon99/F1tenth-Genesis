@@ -72,7 +72,14 @@ DEFAULT_CONFIG = {
     },
     "env": {
         "num_actions": 2,
-        "episode_length": 45.0,
+        # Static fallback only. The trainer (standalone_trainer.build_config) derives
+        # the real horizon from the track via utils.episode_length_for_track so each
+        # track gets ~episode_lap_multiplier laps plus overtaking margin, closer to
+        # the GT Sophy fixed 150 s base scenario than the old single-lap 45 s.
+        "episode_length": 120.0,
+        # Reference pace and lap count used to size the episode horizon per track.
+        "expected_lap_speed_mps": 3.5,
+        "episode_lap_multiplier": 3.0,
         # IV_2026_SIM centerline loop is ~144 m; at ~3.2 m/s a full lap needs ~43 s.
         # 45 s gives one lap plus margin at 10 Hz control (450 steps) without changing
         # control_dt or episode_length semantics.
@@ -83,8 +90,10 @@ DEFAULT_CONFIG = {
         "sim_dt": 0.005,
         # Tuned via scripts/sweep_physics_integration.py: substep counts 2..10 pass
         # the physics_check stability gate for normal upright driving. Finer substeps
-        # (effective 1.25 ms with sim_dt=0.005) help car-car contact stability in 1v1.
-        "sim_substeps": 4,
+        # (effective 0.625 ms with sim_dt=0.005) help car-car contact stability in
+        # 1v1; raised 4->8 after high-speed contacts into a near-stationary self-play
+        # opponent produced constraint-force NaNs at high env counts.
+        "sim_substeps": 8,
         # Softer constraint solve window; must stay >= 2 * sim_dt (Genesis Newton gate).
         "constraint_timeconst": 0.02,
         "solver_iterations": 50,
@@ -106,7 +115,10 @@ DEFAULT_CONFIG = {
         "term_heading_error_rad": 3.0,
         # End the episode (and emit term/lap_finished) after this many completed laps.
         # No lap-completion reward is applied; this is termination/logging only.
-        "target_laps": 1,
+        # Default 0 (disabled): episodes run to the time-based horizon like GT Sophy
+        # base scenarios, so the agent gets multi-lap traffic/overtaking exposure
+        # instead of resetting after a single lap. Set >0 to cap by lap count.
+        "target_laps": 0,
         "car_spawn_pos": (0.0, 0.0, 0.01),
         "car_spawn_rot": (0.0, 0.0, 0.0),
         "joint_names": [
@@ -119,8 +131,14 @@ DEFAULT_CONFIG = {
         },
         # Observation/reset throttle scaling only — longitudinal cap comes from power+drag.
         "max_speed": 15.0,
-        "max_steer": 0.44,  # radians (alias for delta_max)
-        "delta_max": 0.44,  # radians
+        # Real F1TENTH servo hard-clamps the steering at ~0.33 rad (19 deg): see
+        # analysis/analyze_full_lock.py, which measures a ~0.94 m min turning radius
+        # from rosbags (servo saturates at 0.85 -> 0.33 rad effective wheel angle).
+        # Training at 0.44 rad let the policy assume an unreachable 0.70 m radius and
+        # understeer into walls on tight corners; 0.33 rad makes the sim match reality
+        # (0.325 / tan(0.33) = 0.95 m min radius).
+        "max_steer": 0.33,  # radians (alias for delta_max)
+        "delta_max": 0.33,  # radians
         "wheelbase": 0.325,
         "track_width": 0.20,
         "wheel_radius": 0.05,
@@ -139,8 +157,15 @@ DEFAULT_CONFIG = {
         "track": "IV_2026_SIM",
         # --- 1v1 opponent (hard 1v1: exactly one opponent) ---
         # opponent_strategy: None (1v0 / solo), "scripted" (centerline follower),
-        # or "policy" (frozen-policy self-play opponent; deferred training loop).
+        # "policy" (frozen-policy self-play opponent), or "mixed" (per-env mix of
+        # scripted + policy, the GT Sophy-style mixed opponent population).
         "opponent_strategy": None,
+        # Per-env sampling weights for the "mixed" opponent strategy. On each reset
+        # a row is assigned scripted vs policy with these (normalized) probabilities.
+        "opponent_mix": {
+            "scripted_weight": 0.3,
+            "policy_weight": 0.7,
+        },
         # Scripted opponent: centerline follower kept below ego pace so an overtake
         # is feasible. Closed-loop P-control holds this setpoint in m/s.
         "opponent_target_speed": 2.5,
@@ -149,9 +174,17 @@ DEFAULT_CONFIG = {
         "opponent_kh_heading": 1.0,
         "opponent_kp_speed": 1.0,
         # Collision termination: anisotropic ego-frame box overlap (see
-        # terminations.collision_mask). No shaped collision penalty (forfeited
-        # progress is the avoidance incentive).
+        # terminations.collision_mask). An optional shaped GT Sophy any-collision
+        # penalty (collision_k, gated by a "collision" reward scale) adds a dense
+        # per-step signal on top of the forfeited progress from episode reset.
         "term_on_collision": True,
+        # Only terminate on a collision whose closing speed ||v_ego - v_opp||
+        # (world-frame, m/s) exceeds this threshold. Low-speed contacts below it
+        # still incur the collision/rear-end penalties and full contact physics but
+        # let the episode continue, so the agent learns to recover from light taps
+        # instead of resetting on every minor rub. Set to 0.0 to terminate on any
+        # overlap (legacy behavior).
+        "collision_term_speed_mps": 2.0,
         "car_length": 0.46,
         "car_width": 0.30,
         "collision_margin_m": 0.0,
@@ -190,6 +223,17 @@ DEFAULT_CONFIG = {
         # entry is added to reward_scales (the trainer does this for 1v1), so 1v0 is
         # unaffected.
         "passing_k": 5.0,
+        # GT Sophy any-collision penalty gain: per-step reward = -collision_k on
+        # car-to-car overlap (same predicate as collision termination). Only active
+        # when a "collision" entry is added to reward_scales (the trainer does this
+        # for 1v1), so 1v0 is unaffected.
+        "collision_k": 5.0,
+        # GT Sophy rear-end penalty gain Rr (Wurman et al., Nature 2022): per-step
+        # reward = -rear_end_k * ||v_ego - v_opp||^2 when the agent collides with an
+        # opponent that is ahead on the centerline. Scales with squared closing speed
+        # so high-speed rear-ends are punished hardest. Only active when a "rear_end"
+        # entry is added to reward_scales (the trainer does this for 1v1).
+        "rear_end_k": 5.0,
         # Global downscale applied to the summed reward to keep per-step total and
         # value targets O(1) (progress alone was ~9/step before). Preserves the
         # relative balance between the individual reward terms.

@@ -40,8 +40,12 @@ drive_command:
     max_speed: 6.0
     max_steer: 0.44
     clip_actions: 1.0
+    speed_limit_mps: 2.0
     watchdog_timeout_s: 0.5
     brake_behavior: "stop"
+    enable_output_filter: true
+    t_delta: 0.1
+    control_dt: 0.1
 
 evaluation:
   ros__parameters:
