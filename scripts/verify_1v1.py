@@ -40,9 +40,18 @@ def build_cfg(opponent: str, num_envs: int) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     if opponent != "none":
         cfg["env"]["opponent_strategy"] = opponent
+        if opponent == "mixed":
+            # 50/50 so both behaviors are exercised within a small smoke batch.
+            cfg["env"]["opponent_mix"] = {
+                "scripted_weight": 0.5,
+                "policy_weight": 0.5,
+            }
         cfg["obs"]["enable_opponent_obs"] = True
         cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
         cfg["reward"]["reward_scales"]["passing"] = 0.5
+        # Activate the GT Sophy rear-end penalty so the smoke can confirm it fires
+        # when the chase ego rear-ends the slower opponent ahead.
+        cfg["reward"]["reward_scales"]["rear_end"] = 1.0
     return cfg
 
 
@@ -95,6 +104,10 @@ def run(
         term_series: dict[str, list[float]] = {}
         any_nonfinite = False
         passing_present = opponent == "none"  # not expected when off
+        rear_end_present = False
+        rear_end_min = 0.0
+        scripted_speed_max = 0.0
+        policy_rows_seen = False
 
         for _ in range(steps):
             actions = _actions(
@@ -110,6 +123,9 @@ def run(
             if "passing" in terms:
                 passing_present = True
                 passing_series.append(float(terms["passing"].mean()))
+            if "rear_end" in terms:
+                rear_end_present = True
+                rear_end_min = min(rear_end_min, float(terms["rear_end"].min()))
             for name, val in extras.get("termination", {}).items():
                 if torch.is_tensor(val):
                     term_series.setdefault(name, []).append(float(val.sum()))
@@ -118,6 +134,21 @@ def run(
                     "collision", torch.zeros(1)
                 ).sum()
             )
+
+            # Mixed population: split opponent speed by the per-row mode so we can
+            # confirm scripted rows actually drive and policy rows stay valid.
+            if opponent == "mixed":
+                mode_buf = getattr(env.opponent_ctrl, "mode_buf", None)
+                opp_speed = extras.get("metrics", {}).get("opp_speed")
+                if mode_buf is not None and opp_speed is not None:
+                    scripted_rows = ~mode_buf
+                    if scripted_rows.any():
+                        scripted_speed_max = max(
+                            scripted_speed_max,
+                            float(opp_speed[scripted_rows].max().item()),
+                        )
+                    if bool(mode_buf.any()):
+                        policy_rows_seen = True
 
         result = {
             "expected_obs": expected_obs,
@@ -128,6 +159,10 @@ def run(
             "passing_series": passing_series,
             "term_series": term_series,
             "ego_policy": ego_policy,
+            "rear_end_present": rear_end_present,
+            "rear_end_min": rear_end_min,
+            "scripted_speed_max": scripted_speed_max,
+            "policy_rows_seen": policy_rows_seen,
         }
         return result
     finally:
@@ -154,6 +189,18 @@ def check(result: dict, opponent: str) -> list[str]:
             max_jump = max(abs(b - a) for a, b in zip(series[:-1], series[1:]))
             if max_jump > 5.0:
                 failures.append(f"passing reward discontinuous (max step jump {max_jump:.3f})")
+        # Rr smoke: a chase ego that collides with the slower opponent ahead must
+        # trigger the rear-end penalty at least once.
+        if result.get("ego_policy") == "chase" and result["collisions"] > 0:
+            if not result.get("rear_end_present"):
+                failures.append("rear_end reward term missing from reward breakdown")
+            elif result.get("rear_end_min", 0.0) >= 0.0:
+                failures.append("rear_end penalty never fired on a chase-collision step")
+    if opponent == "mixed":
+        if not result.get("policy_rows_seen"):
+            failures.append("mixed: no policy-mode opponent rows were assigned")
+        if result.get("scripted_speed_max", 0.0) <= 1.0:
+            failures.append("mixed: scripted-mode opponents never reached >1 m/s")
     return failures
 
 
@@ -187,6 +234,14 @@ def main() -> int:
     parser.add_argument("--control-interval", type=int, default=10)
     parser.add_argument("--precision", type=str, default="32", choices=["32", "64"])
     parser.add_argument(
+        "--opponent",
+        type=str,
+        default="scripted",
+        choices=["scripted", "mixed"],
+        help="Opponent strategy to verify: 'scripted' (default) or 'mixed' "
+        "(per-row scripted + policy population).",
+    )
+    parser.add_argument(
         "--skip-1v0", action="store_true", help="skip the 1v0 regression shape check"
     )
     parser.add_argument(
@@ -207,13 +262,23 @@ def main() -> int:
 
     all_failures: list[str] = []
 
-    print(f"[verify_1v1] running 1v1 (scripted opponent, ego={args.ego_policy}) ...")
-    res_1v1 = run(
-        "scripted", args.num_envs, args.steps, args.control_interval, args.ego_policy
+    print(
+        f"[verify_1v1] running 1v1 ({args.opponent} opponent, ego={args.ego_policy}) ..."
     )
-    print(f"[verify_1v1] 1v1: {res_1v1['obs_shape']=} collisions={res_1v1['collisions']}")
-    all_failures += [f"[1v1] {m}" for m in check(res_1v1, "scripted")]
-    maybe_plot(res_1v1, "scripted")
+    res_1v1 = run(
+        args.opponent, args.num_envs, args.steps, args.control_interval, args.ego_policy
+    )
+    print(
+        f"[verify_1v1] 1v1: {res_1v1['obs_shape']=} collisions={res_1v1['collisions']} "
+        f"rear_end_min={res_1v1.get('rear_end_min', 0.0):.3f}"
+    )
+    if args.opponent == "mixed":
+        print(
+            f"[verify_1v1] mixed: scripted_speed_max={res_1v1['scripted_speed_max']:.3f} "
+            f"policy_rows_seen={res_1v1['policy_rows_seen']}"
+        )
+    all_failures += [f"[1v1] {m}" for m in check(res_1v1, args.opponent)]
+    maybe_plot(res_1v1, args.opponent)
 
     if not args.skip_1v0:
         print("[verify_1v1] running 1v0 (no opponent) regression shape check ...")

@@ -24,7 +24,12 @@ from .car import (
     setup_entity_controls,
 )
 from .observations import build_observation, obs_opponent
-from .opponents import OpponentContext, PolicyOpponent, make_opponent
+from .opponents import (
+    MixedOpponentController,
+    OpponentContext,
+    PolicyOpponent,
+    make_opponent,
+)
 from .rewards import (
     compute_rewards,
     init_reward_state,
@@ -752,6 +757,9 @@ class F1tenthEnv:
         if self.opponent is not None:
             opp_ss = self._opponent_step_state(self.opp_base_pos)
             step_state["opp_s"] = opp_ss["frenet"]["s"]
+            # World-frame opponent velocity for the GT Sophy rear-end penalty (Rr),
+            # which scales with the squared closing speed ||v_ego - v_opp||^2.
+            step_state["opp_vel_world"] = self.opp_vel_world
             # Same ego-frame box overlap predicate used for collision termination,
             # exposed to the reward path for the GT Sophy any-collision penalty.
             ego_yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
@@ -1094,8 +1102,12 @@ class F1tenthEnv:
         obs_mean: torch.Tensor,
         obs_var: torch.Tensor,
     ) -> None:
-        """Hot-swap the policy opponent's weights and obs-norm stats (self-play)."""
-        if not isinstance(self.opponent_ctrl, PolicyOpponent):
+        """Hot-swap the policy opponent's weights and obs-norm stats (self-play).
+
+        Works for a plain PolicyOpponent and for the MixedOpponentController, which
+        forwards the snapshot to its inner policy.
+        """
+        if not isinstance(self.opponent_ctrl, (PolicyOpponent, MixedOpponentController)):
             return
         self.opponent_ctrl.load_snapshot(state_dict, obs_mean, obs_var)
 

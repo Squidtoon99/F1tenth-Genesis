@@ -72,7 +72,14 @@ DEFAULT_CONFIG = {
     },
     "env": {
         "num_actions": 2,
-        "episode_length": 45.0,
+        # Static fallback only. The trainer (standalone_trainer.build_config) derives
+        # the real horizon from the track via utils.episode_length_for_track so each
+        # track gets ~episode_lap_multiplier laps plus overtaking margin, closer to
+        # the GT Sophy fixed 150 s base scenario than the old single-lap 45 s.
+        "episode_length": 120.0,
+        # Reference pace and lap count used to size the episode horizon per track.
+        "expected_lap_speed_mps": 3.5,
+        "episode_lap_multiplier": 3.0,
         # IV_2026_SIM centerline loop is ~144 m; at ~3.2 m/s a full lap needs ~43 s.
         # 45 s gives one lap plus margin at 10 Hz control (450 steps) without changing
         # control_dt or episode_length semantics.
@@ -108,7 +115,10 @@ DEFAULT_CONFIG = {
         "term_heading_error_rad": 3.0,
         # End the episode (and emit term/lap_finished) after this many completed laps.
         # No lap-completion reward is applied; this is termination/logging only.
-        "target_laps": 1,
+        # Default 0 (disabled): episodes run to the time-based horizon like GT Sophy
+        # base scenarios, so the agent gets multi-lap traffic/overtaking exposure
+        # instead of resetting after a single lap. Set >0 to cap by lap count.
+        "target_laps": 0,
         "car_spawn_pos": (0.0, 0.0, 0.01),
         "car_spawn_rot": (0.0, 0.0, 0.0),
         "joint_names": [
@@ -147,8 +157,15 @@ DEFAULT_CONFIG = {
         "track": "IV_2026_SIM",
         # --- 1v1 opponent (hard 1v1: exactly one opponent) ---
         # opponent_strategy: None (1v0 / solo), "scripted" (centerline follower),
-        # or "policy" (frozen-policy self-play opponent; deferred training loop).
+        # "policy" (frozen-policy self-play opponent), or "mixed" (per-env mix of
+        # scripted + policy, the GT Sophy-style mixed opponent population).
         "opponent_strategy": None,
+        # Per-env sampling weights for the "mixed" opponent strategy. On each reset
+        # a row is assigned scripted vs policy with these (normalized) probabilities.
+        "opponent_mix": {
+            "scripted_weight": 0.3,
+            "policy_weight": 0.7,
+        },
         # Scripted opponent: centerline follower kept below ego pace so an overtake
         # is feasible. Closed-loop P-control holds this setpoint in m/s.
         "opponent_target_speed": 2.5,
@@ -204,6 +221,12 @@ DEFAULT_CONFIG = {
         # when a "collision" entry is added to reward_scales (the trainer does this
         # for 1v1), so 1v0 is unaffected.
         "collision_k": 5.0,
+        # GT Sophy rear-end penalty gain Rr (Wurman et al., Nature 2022): per-step
+        # reward = -rear_end_k * ||v_ego - v_opp||^2 when the agent collides with an
+        # opponent that is ahead on the centerline. Scales with squared closing speed
+        # so high-speed rear-ends are punished hardest. Only active when a "rear_end"
+        # entry is added to reward_scales (the trainer does this for 1v1).
+        "rear_end_k": 5.0,
         # Global downscale applied to the summed reward to keep per-step total and
         # value targets O(1) (progress alone was ~9/step before). Preserves the
         # relative balance between the individual reward terms.

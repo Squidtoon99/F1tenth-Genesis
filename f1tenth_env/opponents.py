@@ -165,6 +165,75 @@ class PolicyOpponent(OpponentController):
         return torch.clamp(action, -self.act_clip, self.act_clip).to(ctx.opp_obs.device)
 
 
+class MixedOpponentController(OpponentController):
+    """Per-env mixed opponent population (GT Sophy-style).
+
+    Each parallel env row is independently assigned, on reset, to either the
+    scripted centerline follower or the frozen self-play policy according to the
+    configured mix weights. This is the simple hard-1v1 analogue of GT Sophy's
+    mixed opponent population (built-in slower AI + curated policy snapshots),
+    which the paper found important so the agent does not overfit to pure
+    self-play opponents.
+
+    ``mode_buf`` is a per-row bool: ``True`` -> policy, ``False`` -> scripted.
+    """
+
+    requires_observation = True
+
+    def __init__(
+        self,
+        scripted: ScriptedCenterlineOpponent,
+        policy: PolicyOpponent,
+        scripted_weight: float = 0.3,
+        policy_weight: float = 0.7,
+    ):
+        self.scripted = scripted
+        self.policy = policy
+        total = float(scripted_weight) + float(policy_weight)
+        if total <= 0.0:
+            raise ValueError(
+                "opponent_mix weights must sum to a positive value; got "
+                f"scripted={scripted_weight}, policy={policy_weight}"
+            )
+        self.policy_prob = float(policy_weight) / total
+        self.mode_buf: torch.Tensor | None = None
+
+    def _ensure_buf(self, num_envs: int, device: torch.device) -> None:
+        if self.mode_buf is None or self.mode_buf.numel() != num_envs:
+            # Default everyone to policy until the first reset assigns a mix.
+            self.mode_buf = torch.ones(num_envs, dtype=torch.bool, device=device)
+
+    def reset(self, mask: torch.Tensor) -> None:
+        if mask is None:
+            return
+        self._ensure_buf(mask.shape[0], mask.device)
+        assert self.mode_buf is not None
+        n_reset = int(mask.sum().item())
+        if n_reset > 0:
+            draws = torch.rand(n_reset, device=mask.device) < self.policy_prob
+            self.mode_buf[mask] = draws
+        self.scripted.reset(mask)
+        self.policy.reset(mask)
+
+    def act(self, ctx: OpponentContext) -> torch.Tensor:
+        num_envs = ctx.opp_pos.shape[0]
+        self._ensure_buf(num_envs, ctx.opp_pos.device)
+        assert self.mode_buf is not None
+        scripted_act = self.scripted.act(ctx)
+        policy_act = self.policy.act(ctx)
+        mode = self.mode_buf.to(scripted_act.device).unsqueeze(-1)
+        return torch.where(mode, policy_act, scripted_act)
+
+    def load_snapshot(
+        self,
+        actor_state_dict: dict[str, torch.Tensor],
+        obs_mean: torch.Tensor,
+        obs_var: torch.Tensor,
+    ) -> None:
+        """Forward a self-play snapshot to the inner policy opponent."""
+        self.policy.load_snapshot(actor_state_dict, obs_mean, obs_var)
+
+
 def make_opponent(
     env_cfg: dict[str, Any],
     obs_cfg: dict[str, Any],
@@ -173,7 +242,8 @@ def make_opponent(
     """Factory keyed on ``env_cfg['opponent_strategy']``.
 
     Returns ``None`` when no opponent is configured (solo / 1v0). Hard 1v1: this
-    only ever returns a single controller.
+    only ever returns a single controller (the mixed controller still drives one
+    opponent, just sampling its behavior per env row).
     """
     strategy = env_cfg.get("opponent_strategy")
     if strategy is None:
@@ -182,6 +252,14 @@ def make_opponent(
         return ScriptedCenterlineOpponent(env_cfg)
     if strategy == "policy":
         return _make_policy_opponent(env_cfg, obs_cfg, device)
+    if strategy == "mixed":
+        mix = env_cfg.get("opponent_mix", {})
+        return MixedOpponentController(
+            scripted=ScriptedCenterlineOpponent(env_cfg),
+            policy=_make_policy_opponent(env_cfg, obs_cfg, device),
+            scripted_weight=float(mix.get("scripted_weight", 0.3)),
+            policy_weight=float(mix.get("policy_weight", 0.7)),
+        )
     raise ValueError(f"Unknown opponent_strategy: {strategy!r}")
 
 
