@@ -606,6 +606,11 @@ def build_config(args: argparse.Namespace) -> dict:
         # leaves it out of the reward breakdown entirely.
         if float(args.rear_end_scale) != 0.0:
             cfg["reward"]["reward_scales"]["rear_end"] = args.rear_end_scale
+        # Closing-speed threshold for collision termination (0.0 = terminate on any
+        # overlap). Below it, contacts only apply penalties/physics and the episode
+        # continues.
+        if args.collision_term_speed is not None:
+            cfg["env"]["collision_term_speed_mps"] = float(args.collision_term_speed)
         # Car-car contacts need a slightly softer / better-resolved constraint solve.
         cfg["env"]["solver_iterations"] = max(
             int(cfg["env"].get("solver_iterations", 50)), 80
@@ -779,6 +784,15 @@ def parse_args() -> argparse.Namespace:
         help="Reward scale for the GT Sophy rear-end penalty Rr (-rear_end_k * "
         "closing-speed^2 when colliding with an opponent ahead). 0.0 disables it. "
         "Only used when --opponent is not 'none'.",
+    )
+    parser.add_argument(
+        "--collision-term-speed",
+        type=float,
+        default=None,
+        help="Closing-speed threshold (m/s) above which a car-car collision ends "
+        "the episode. Below it, low-speed contacts still incur penalties and contact "
+        "physics but the agent keeps driving. 0.0 terminates on any overlap. "
+        "Defaults to config env.collision_term_speed_mps.",
     )
     parser.add_argument(
         "--zero-tyre-slip-obs",

@@ -48,6 +48,10 @@ def build_cfg(opponent: str, num_envs: int) -> dict:
             }
         cfg["obs"]["enable_opponent_obs"] = True
         cfg["obs"]["num_obs"] = 380 + int(cfg["obs"]["opponent_obs_dim"])
+        # Smoke wants the collision-termination path to be deterministically
+        # reachable, so terminate on any overlap regardless of closing speed
+        # (the speed-gated default is exercised by unit tests instead).
+        cfg["env"]["collision_term_speed_mps"] = 0.0
         cfg["reward"]["reward_scales"]["passing"] = 0.5
         # Activate the GT Sophy rear-end penalty so the smoke can confirm it fires
         # when the chase ego rear-ends the slower opponent ahead.

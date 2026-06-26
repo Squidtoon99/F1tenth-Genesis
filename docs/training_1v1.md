@@ -44,6 +44,7 @@ as intended.
 | `--passing-scale FLOAT` | `0.5` | Reward scale on the passing term `k * (ego_ds - opp_ds)`. Positive when the ego gains track position. Raise it to push overtaking harder; lower it if it dominates clean-driving terms. Ignored when `--opponent none`. |
 | `--collision-scale FLOAT` | `1.0` | Reward scale on the GT Sophy any-collision term `Rc = -collision_k` (binary, per-step penalty on car-car box overlap, regardless of fault). Ignored when `--opponent none`. |
 | `--rear-end-scale FLOAT` | `1.0` | Reward scale on the GT Sophy rear-end term `Rr = -rear_end_k * ‖v_ego - v_opp‖²`, applied when the ego collides with an opponent that is **ahead** on the centerline (scales with squared closing speed). `0.0` disables it. Ignored when `--opponent none`. |
+| `--collision-term-speed FLOAT` | config (`2.0`) | Closing-speed threshold (m/s, world-frame `‖v_ego - v_opp‖`) above which a car-car collision **ends** the episode. Below it, low-speed contacts still incur the collision/rear-end penalties and full contact physics but the agent keeps driving — so it learns to recover from light taps instead of resetting on every minor rub. `0.0` = terminate on any overlap (legacy). Ignored when `--opponent none`. |
 | `--opponent-ckpt PATH` | `None` | Only for `--opponent policy`: the frozen actor checkpoint to drive the opponent. |
 
 ### Episode horizon flags
@@ -82,10 +83,14 @@ under the `env` / `obs` / `reward` sections and can be overridden there if neede
   with an opponent that is **ahead** on the centerline, scaling with the squared
   closing speed so high-speed rear-ends are punished hardest. It stacks on top of `Rc`
   and is gated by the `rear_end` reward scale (`--rear-end-scale`).
-- **Termination**: the episode ends on car-to-car overlap detected by an anisotropic
-  ego-frame box using `car_length` (0.46 m), `car_width` (0.30 m), and optional
-  `collision_margin_m` (see `terminations.collision_mask`). Episode reset forfeits
-  future progress reward in addition to any configured collision penalty.
+- **Termination**: car-to-car overlap is detected by an anisotropic ego-frame box
+  using `car_length` (0.46 m), `car_width` (0.30 m), and optional `collision_margin_m`
+  (see `terminations.collision_mask`). The episode ends **only when the closing speed
+  `‖v_ego - v_opp‖` exceeds `collision_term_speed_mps`** (default 2.0 m/s, configurable
+  via `--collision-term-speed`); lower-speed contacts keep driving but still pay the
+  collision/rear-end penalties and undergo full contact physics. Episode reset forfeits
+  future progress reward in addition to any configured collision penalty. Set
+  `collision_term_speed_mps = 0.0` to terminate on any overlap.
 
 ## Verify before a long run
 

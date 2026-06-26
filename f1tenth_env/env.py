@@ -757,8 +757,11 @@ class F1tenthEnv:
         if self.opponent is not None:
             opp_ss = self._opponent_step_state(self.opp_base_pos)
             step_state["opp_s"] = opp_ss["frenet"]["s"]
-            # World-frame opponent velocity for the GT Sophy rear-end penalty (Rr),
-            # which scales with the squared closing speed ||v_ego - v_opp||^2.
+            # World-frame ego and opponent velocities for the GT Sophy rear-end
+            # penalty (Rr), which scales with the squared closing speed
+            # ||v_ego - v_opp||^2. Both must be in the same (world) frame; note
+            # base_lin_vel is the body-frame velocity and must not be used here.
+            step_state["ego_vel_world"] = self.base_vel_world
             step_state["opp_vel_world"] = self.opp_vel_world
             # Same ego-frame box overlap predicate used for collision termination,
             # exposed to the reward path for the GT Sophy any-collision penalty.
@@ -800,12 +803,15 @@ class F1tenthEnv:
             )
         )
 
-        # Collision termination (1v1): anisotropic ego-frame box overlap.
+        # Collision termination (1v1): anisotropic ego-frame box overlap, gated by
+        # closing speed so only high-speed impacts end the episode. Low-speed taps
+        # still incur the collision/rear-end penalties and contact physics but let
+        # the agent keep driving.
         if self.opponent is not None and bool(
             self.env_cfg.get("term_on_collision", True)
         ):
             ego_yaw = gu.quat_to_xyz(self.base_quat, rpy=True, degrees=False)[:, 2]
-            collision = collision_mask(
+            overlap = collision_mask(
                 self.base_pos[:, :2],
                 self.opp_base_pos[:, :2],
                 ego_yaw,
@@ -815,6 +821,14 @@ class F1tenthEnv:
                     self.env_cfg.get("collision_margin_m", 0.0)
                 ),
             )
+            term_speed = float(self.env_cfg.get("collision_term_speed_mps", 0.0))
+            if term_speed > 0.0:
+                closing_speed = torch.linalg.norm(
+                    self.base_vel_world[:, :2] - self.opp_vel_world[:, :2], dim=-1
+                )
+                collision = overlap & (closing_speed > term_speed)
+            else:
+                collision = overlap
             self.reset_buf = self.reset_buf | collision
             self.extras["termination"]["collision"] = collision.to(dtype=gs.tc_float)
 

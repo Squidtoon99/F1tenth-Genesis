@@ -212,7 +212,9 @@ def reward_rear_end(
     mask = step_state.get("car_collision")
     opp_s = step_state.get("opp_s")
     opp_vel = step_state.get("opp_vel_world")
-    ego_vel = step_state.get("base_lin_vel")
+    # World-frame ego velocity (NOT body-frame base_lin_vel) so the closing speed
+    # is computed in the same frame as opp_vel_world.
+    ego_vel = step_state.get("ego_vel_world")
     if mask is None or opp_s is None or opp_vel is None or ego_vel is None:
         return torch.zeros_like(step_state["progress_ds"])
 

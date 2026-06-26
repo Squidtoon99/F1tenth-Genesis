@@ -48,7 +48,7 @@ def _step_state(*, collision, ego_s, opp_s, ego_vel, opp_vel, length=100.0):
         "car_collision": torch.tensor(collision, dtype=torch.bool),
         "opp_s": torch.tensor(opp_s, dtype=torch.float32),
         "opp_vel_world": torch.tensor(opp_vel, dtype=torch.float32),
-        "base_lin_vel": torch.tensor(ego_vel, dtype=torch.float32),
+        "ego_vel_world": torch.tensor(ego_vel, dtype=torch.float32),
         "frenet": {"s": torch.tensor(ego_s, dtype=torch.float32), "L": length},
     }
 

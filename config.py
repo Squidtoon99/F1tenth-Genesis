@@ -178,6 +178,13 @@ DEFAULT_CONFIG = {
         # penalty (collision_k, gated by a "collision" reward scale) adds a dense
         # per-step signal on top of the forfeited progress from episode reset.
         "term_on_collision": True,
+        # Only terminate on a collision whose closing speed ||v_ego - v_opp||
+        # (world-frame, m/s) exceeds this threshold. Low-speed contacts below it
+        # still incur the collision/rear-end penalties and full contact physics but
+        # let the episode continue, so the agent learns to recover from light taps
+        # instead of resetting on every minor rub. Set to 0.0 to terminate on any
+        # overlap (legacy behavior).
+        "collision_term_speed_mps": 2.0,
         "car_length": 0.46,
         "car_width": 0.30,
         "collision_margin_m": 0.0,
