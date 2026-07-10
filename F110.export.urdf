@@ -26,8 +26,8 @@
   <link name="chassis_inertia">
     <inertial>
   <origin xyz="0.1477 0 0" rpy="0 0 0"/>
-  <mass value="4.0"/>
-  <inertia ixx="0.010609" ixy="0" ixz="0" iyy="0.050409" iyz="0" izz="0.05865"/>
+  <mass value="2.05"/>
+  <inertia ixx="0.0122" ixy="0" ixz="0" iyy="0.0579" iyz="0" izz="0.07"/>
 
     </inertial>
   </link>
@@ -152,7 +152,7 @@
     <parent link="chassis"/>
     <child link="left_steering_hinge"/>
     <axis xyz="-1 0 0"/>
-    <limit lower="-1.0" upper="1.0" effort="10" velocity="100"/>
+    <limit lower="-0.44" upper="0.44" effort="10" velocity="100"/>
   </joint>
   <transmission name="left_steering_hinge_transmission" type="SimpleTransmission">
     <type>transmission_interface/SimpleTransmission</type>
@@ -190,7 +190,7 @@
     <parent link="chassis"/>
     <child link="right_steering_hinge"/>
     <axis xyz="-1 0 0"/>
-    <limit lower="-1.0" upper="1.0" effort="10" velocity="100"/>
+    <limit lower="-0.44" upper="0.44" effort="10" velocity="100"/>
   </joint>
   <transmission name="right_steering_hinge_transmission" type="SimpleTransmission">
     <type>transmission_interface/SimpleTransmission</type>

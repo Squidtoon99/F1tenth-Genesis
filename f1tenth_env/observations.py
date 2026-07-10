@@ -1,3 +1,4 @@
+import math
 from typing import Any
 
 import numpy as np
@@ -8,19 +9,13 @@ from genesis.utils.geom import quat_to_xyz
 
 
 def obs_track_progress(
-    centerline: np.ndarray,
-    base_pos: torch.Tensor,
+    step_state: dict[str, Any],
     device: torch.device,
 ) -> torch.Tensor:
-    centerline_t = torch.as_tensor(centerline, device=device, dtype=gs.tc_float)
-    points = centerline_t.unsqueeze(0) - base_pos[:, :2].unsqueeze(1)
-    distances = torch.linalg.norm(points, dim=-1)
-    closest_idx = torch.argmin(distances, dim=-1)
-
-    progress_ratio = closest_idx.to(dtype=gs.tc_float) / max(
-        (centerline_t.shape[0] - 1), 1
-    )
-    angle = 2.0 * torch.tensor(np.pi, dtype=gs.tc_float, device=device) * progress_ratio
+    frenet = step_state["frenet"]
+    track_len = frenet["L"].clamp(min=1e-6)
+    progress_ratio = frenet["s"] / track_len
+    angle = (2.0 * math.pi) * progress_ratio
     return torch.stack([torch.cos(angle), torch.sin(angle)], dim=-1)
 
 
@@ -62,43 +57,36 @@ def obs_contact_flag(
 
 
 def obs_future_track_points(
-    centerline: np.ndarray,
     base_pos: torch.Tensor,
     base_quat: torch.Tensor,
     base_lin_vel: torch.Tensor,
     obs_cfg: dict[str, Any],
     device: torch.device,
+    step_state: dict[str, Any],
 ) -> torch.Tensor:
-    centerline_t = torch.as_tensor(centerline, device=device, dtype=gs.tc_float)
+    obs_track = step_state["obs_track"]
+    centerline_t = obs_track["centerline_t"]
+    seg = obs_track["seg"]
+    seg_len = obs_track["seg_len"]
+    cumlen = obs_track["cumlen"]
+    n = obs_track["n"]
+
     robot_pos = base_pos[:, :2]
     lin_vel = base_lin_vel[:, :2]
     yaw = quat_to_xyz(base_quat, rpy=True, degrees=False)[:, 2]
 
-    n = centerline_t.shape[0]
-    seg = centerline_t[1:] - centerline_t[:-1]
-    seg_len = torch.linalg.vector_norm(seg, dim=-1)
-    cumlen = torch.cat(
-        [
-            torch.zeros(1, device=device, dtype=gs.tc_float),
-            torch.cumsum(seg_len, dim=0),
-        ],
-        dim=0,
-    )
-    total_len = cumlen[-1].clamp(min=1e-6)
-
     batch = robot_pos.shape[0]
     samples = int(obs_cfg.get("future_track_num_points", 60))
     horizon_s = float(obs_cfg.get("future_track_horizon_s", 6.0))
-    track_width = float(obs_cfg.get("future_track_width", 2.0))
+    # future_track_width is deprecated: corridor edges use per-vertex CSV widths.
 
-    dists = torch.linalg.vector_norm(
-        centerline_t.unsqueeze(0) - robot_pos.unsqueeze(1), dim=-1
-    )
-    closest_idx = torch.argmin(dists, dim=-1)
-    s0 = cumlen[closest_idx]
+    frenet = step_state["frenet"]
+    s0 = frenet["s"]
+    total_len = frenet["L"].clamp(min=1e-6)
 
+    min_lookahead = float(obs_cfg.get("future_track_min_lookahead_m", 5.0))
     speed = torch.linalg.vector_norm(lin_vel, dim=-1)
-    lookahead = speed * horizon_s
+    lookahead = torch.clamp(speed * horizon_s, min=min_lookahead)
 
     steps = torch.arange(1, samples + 1, device=device, dtype=gs.tc_float) / samples
     s_targets = s0.unsqueeze(1) + lookahead.unsqueeze(1) * steps.unsqueeze(0)
@@ -119,9 +107,17 @@ def obs_future_track_points(
     tangents = (p1 - p0) / seg_len_sel.unsqueeze(-1)
     normals = torch.stack([-tangents[:, 1], tangents[:, 0]], dim=-1)
 
-    half_w = 0.5 * track_width
-    left_pts = center_pts + half_w * normals
-    right_pts = center_pts - half_w * normals
+    w_tr_left = obs_track["w_tr_left"]
+    w_tr_right = obs_track["w_tr_right"]
+    alpha_t = alpha.squeeze(-1)
+    w_l = w_tr_left[seg_idx_flat] + alpha_t * (
+        w_tr_left[seg_idx_flat + 1] - w_tr_left[seg_idx_flat]
+    )
+    w_r = w_tr_right[seg_idx_flat] + alpha_t * (
+        w_tr_right[seg_idx_flat + 1] - w_tr_right[seg_idx_flat]
+    )
+    left_pts = center_pts + w_l.unsqueeze(-1) * normals
+    right_pts = center_pts - w_r.unsqueeze(-1) * normals
 
     center_pts = center_pts.view(batch, samples, 2)
     left_pts = left_pts.view(batch, samples, 2)
@@ -147,8 +143,76 @@ def obs_future_track_points(
 
 
 def obs_tyre_slip(step_state: dict[str, Any]) -> torch.Tensor:
-    slip = step_state["tyre_slip"]
-    return slip
+    return step_state["tyre_slip"]
+
+
+def obs_opponent(
+    self_agent: dict[str, torch.Tensor],
+    other_agent: dict[str, torch.Tensor],
+    obs_cfg: dict[str, Any],
+    present: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Symmetric opponent-relative observation block (default K=7).
+
+    Built from "self"'s ego frame with "other" as the opponent, so the exact same
+    function serves the ego (other = opponent) and the opponent's own egocentric
+    observation (other = ego). Components, in order:
+
+    0,1  other position relative to self, rotated into self's body frame (m)
+    2,3  other velocity relative to self, rotated into self's body frame (m/s)
+    4    signed along-track gap ``s_other - s_self`` wrapped to ``[-L/2, L/2]`` and
+         normalized by ``L/2`` (so it lives in ``[-1, 1]``; positive => other ahead)
+    5    other's signed lateral offset from the centerline ``ey_other`` (m)
+    6    presence flag (1.0 if the opponent is present, else 0.0)
+
+    Each ``*_agent`` dict provides ``pos_xy (B,2)``, ``yaw (B,)``,
+    ``vel_xy (B,2)`` (world frame), ``s (B,)``, ``ey (B,)`` and ``L`` (``(B,)`` or
+    scalar). When ``present`` is False for a row, the entire block (including the
+    presence flag) is zeroed - this is the exact 1v0 sentinel.
+    """
+    pos_s = self_agent["pos_xy"]
+    yaw_s = self_agent["yaw"].reshape(-1)
+    vel_s = self_agent["vel_xy"]
+    s_s = self_agent["s"].reshape(-1)
+
+    pos_o = other_agent["pos_xy"]
+    vel_o = other_agent["vel_xy"]
+    s_o = other_agent["s"].reshape(-1)
+    ey_o = other_agent["ey"].reshape(-1)
+
+    track_len = self_agent["L"]
+    if not torch.is_tensor(track_len):
+        track_len = torch.as_tensor(track_len, dtype=s_s.dtype, device=s_s.device)
+    track_len = track_len.reshape(-1).to(s_s.dtype)
+
+    cos_y = torch.cos(yaw_s)
+    sin_y = torch.sin(yaw_s)
+
+    d = pos_o - pos_s
+    rel_x = cos_y * d[:, 0] + sin_y * d[:, 1]
+    rel_y = -sin_y * d[:, 0] + cos_y * d[:, 1]
+
+    dv = vel_o - vel_s
+    rel_vx = cos_y * dv[:, 0] + sin_y * dv[:, 1]
+    rel_vy = -sin_y * dv[:, 0] + cos_y * dv[:, 1]
+
+    gap = s_o - s_s
+    half = 0.5 * track_len
+    gap = torch.where(gap > half, gap - track_len, gap)
+    gap = torch.where(gap < -half, gap + track_len, gap)
+    gap_norm = gap / half.clamp_min(1e-6)
+
+    if present is None:
+        present_f = torch.ones_like(rel_x)
+    else:
+        present_f = present.reshape(-1).to(rel_x.dtype)
+
+    block = torch.stack(
+        [rel_x, rel_y, rel_vx, rel_vy, gap_norm, ey_o, present_f], dim=-1
+    )
+    # Zero the whole block (incl. presence flag) where the opponent is absent so
+    # the 1v0 sentinel is exactly zeros.
+    return block * present_f.unsqueeze(-1)
 
 
 def build_observation(
@@ -160,39 +224,80 @@ def build_observation(
     last_actions: torch.Tensor,
     base_pos: torch.Tensor,
     base_quat: torch.Tensor,
-    centerline: np.ndarray,
     obs_cfg: dict[str, Any],
     step_state: dict[str, Any],
     device: torch.device,
+    opponent_block: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    obs = torch.concatenate(
-        (
-            base_lin_vel[:, :2],
-            base_ang_vel[:, 2:3],
-            base_lin_acc[:, :2],
-            last_actions,
-            obs_track_progress(centerline, base_pos, device),
-            obs_centerline_angle(step_state, base_quat),
-            obs_centerline_distance(step_state),
-            obs_contact_flag(step_state, obs_cfg),
-            obs_future_track_points(
-                centerline,
-                base_pos,
-                base_quat,
-                base_lin_vel,
-                obs_cfg,
-                device,
-            ),
+    obs_scales = obs_cfg.get("obs_scales", {})
+    lin_vel_scale = float(obs_scales.get("lin_vel", 1.0))
+    ang_vel_scale = float(obs_scales.get("ang_vel", 1.0))
+    lin_acc_scale = float(obs_scales.get("lin_acc", 1.0))
+
+    components = (
+        base_lin_vel[:, :2] * lin_vel_scale,
+        base_ang_vel[:, 2:3] * ang_vel_scale,
+        base_lin_acc[:, :2] * lin_acc_scale,
+        last_actions,
+        obs_track_progress(step_state, device),
+        obs_centerline_angle(step_state, base_quat),
+        obs_centerline_distance(step_state),
+        obs_contact_flag(step_state, obs_cfg),
+        obs_future_track_points(
+            base_pos,
+            base_quat,
+            base_lin_vel,
+            obs_cfg,
+            device,
+            step_state,
         ),
-        dim=-1,
+        obs_tyre_slip(step_state),
     )
 
-    actual_obs_dim = int(obs.shape[1])
-    if actual_obs_dim != num_obs:
+    # 1v1: append the opponent-relative block as the final component. When
+    # enabled but no block is provided (e.g. opponent absent for this batch), use
+    # the exact zero sentinel so num_obs stays consistent.
+    if bool(obs_cfg.get("enable_opponent_obs", False)):
+        opp_dim = int(obs_cfg.get("opponent_obs_dim", 7))
+        if opponent_block is None:
+            opponent_block = base_lin_vel.new_zeros((num_envs, opp_dim))
+        components = components + (opponent_block,)
+
+    # Write components into a single freshly-allocated buffer via slice copies
+    # instead of torch.concatenate. This drops the concatenate output allocation
+    # and its copy kernel while remaining numerically identical. The buffer is
+    # freshly allocated each step (never reused in place), so returned/stored
+    # observations stay independent of subsequent steps.
+    obs = base_lin_vel.new_empty((num_envs, num_obs))
+    offset = 0
+    for comp in components:
+        width = comp.shape[1]
+        next_offset = offset + width
+        if next_offset > num_obs:
+            raise ValueError(
+                "Observation shape mismatch: components exceed "
+                f"num_obs={num_obs} (overflow at width {width}). "
+                "Check obs_cfg['num_obs'] and observation component sizes."
+            )
+        obs[:, offset:next_offset] = comp
+        offset = next_offset
+
+    if offset != num_obs:
         raise ValueError(
             "Observation shape mismatch: "
-            f"expected num_obs={num_obs}, got {actual_obs_dim}. "
+            f"expected num_obs={num_obs}, got {offset}. "
             "Check obs_cfg['num_obs'] and observation component sizes."
         )
+
+    # Final safety net: bound the whole observation so a transient physics
+    # blow-up (e.g. a high-speed spin sending ang_vel/lin_acc or speed-scaled
+    # future-track points to huge magnitudes) can never feed extreme values into
+    # the networks. Disabled when clip_obs <= 0.
+    clip_obs = float(obs_cfg.get("clip_obs", 0.0))
+    if clip_obs > 0.0:
+        obs = torch.clamp(obs, min=-clip_obs, max=clip_obs)
+
+    if bool(obs_cfg.get("zero_tyre_slip_obs", False)):
+        obs[:, 372:380] = 0.0
 
     return obs

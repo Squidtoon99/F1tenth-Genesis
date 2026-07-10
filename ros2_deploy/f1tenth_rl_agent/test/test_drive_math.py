@@ -3,7 +3,7 @@
 import math
 
 from f1tenth_rl_agent import interfaces as ifc
-from f1tenth_rl_agent.drive_math import map_action_to_drive
+from f1tenth_rl_agent.drive_math import lag_alpha, map_action_to_drive, step_first_order_lag
 
 
 def test_full_throttle_zero_steer():
@@ -33,3 +33,12 @@ def test_clipping():
     speed, steer = map_action_to_drive(5.0, -5.0, ifc.MAX_SPEED, ifc.MAX_STEER)
     assert math.isclose(speed, ifc.MAX_SPEED)
     assert math.isclose(steer, -ifc.MAX_STEER)
+
+
+def test_lag_alpha_training_defaults():
+    assert math.isclose(lag_alpha(0.1, 0.1), 0.5)
+
+
+def test_step_first_order_lag():
+    assert math.isclose(step_first_order_lag(0.0, 1.0, 0.5), 0.5)
+    assert math.isclose(step_first_order_lag(0.5, 1.0, 0.5), 0.75)

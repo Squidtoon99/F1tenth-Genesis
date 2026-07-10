@@ -1,0 +1,80 @@
+# Shared defaults for all overnight Sophy-aligned runs.
+defaults:
+  num_envs: 128
+  total_steps: 500000
+  min_train_samples: 40000
+  ckpt_interval: 10000
+  log_interval: 100
+  track: IV_2026_SIM
+  wandb: true
+  wandb_mode: online
+  # Self-play is enabled by default via orchestrator CLI (--self-play).
+  # Opt out globally with --no-self-play, or per hypothesis with self_play: false.
+  # Optional self-play overrides (trainer defaults used when omitted):
+  # selfplay_snapshot_interval: 20000
+  # selfplay_refresh_interval: 5000
+  # selfplay_pool_size: 5
+  # selfplay_sample: mixed
+
+hypotheses:
+  H1:
+    id: sophy_1m_selfplay_p64
+    hypothesis: "1M buffer + delayed self-play at 128 envs"
+    priority: 1
+    args:
+      self_play: true
+      precision: "64"
+      buffer_capacity: 1000000
+      alpha: 0.01
+      seed: 42
+
+  H2:
+    id: sophy_1m_explore
+    hypothesis: "Collapse from under-exploration — increase entropy"
+    priority: 2
+    args:
+      precision: "64"
+      buffer_capacity: 1000000
+      alpha: 0.2
+      seed: 43
+
+  H3:
+    id: sophy_1m_stable128
+    hypothesis: "Stability variant — moderate entropy at 128 envs"
+    priority: 3
+    args:
+      precision: "64"
+      buffer_capacity: 1000000
+      alpha: 0.15
+      seed: 44
+
+  H4:
+    id: sophy_2m_p64
+    hypothesis: "H1 healthy — more replay diversity with 2M buffer"
+    priority: 4
+    args:
+      precision: "64"
+      buffer_capacity: 2000000
+      alpha: 0.01
+      seed: 45
+
+  H5:
+    id: sophy_1m_p32
+    hypothesis: "H1 stable at fp64 — push throughput with fp32"
+    priority: 5
+    args:
+      precision: "32"
+      buffer_capacity: 1000000
+      alpha: 0.01
+      seed: 46
+
+  H6:
+    id: sophy_1m_updates2
+    hypothesis: "H5 fast but plateaus — double gradient updates per step"
+    priority: 6
+    args:
+      precision: "32"
+      buffer_capacity: 1000000
+      alpha: 0.01
+      updates_per_step: 2
+      seed: 47

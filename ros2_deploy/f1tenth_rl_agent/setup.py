@@ -14,6 +14,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         (os.path.join("share", package_name, "launch"), glob("launch/*.py")),
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
+        (os.path.join("share", package_name, "assets"), glob("assets/*")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -26,9 +27,11 @@ setup(
         "console_scripts": [
             "track_server = f1tenth_rl_agent.track_server_node:main",
             "observation_builder = f1tenth_rl_agent.observation_builder_node:main",
+            "obs_debug = f1tenth_rl_agent.obs_debug_node:main",
             "policy_inference = f1tenth_rl_agent.policy_inference_node:main",
             "drive_command = f1tenth_rl_agent.drive_command_node:main",
             "evaluation = f1tenth_rl_agent.evaluation_node:main",
+            "scripted_opponent = f1tenth_rl_agent.scripted_opponent_node:main",
         ],
     },
 )

@@ -1,4 +1,4 @@
-"""observation_builder_node: build the 372-dim policy observation from odometry.
+"""observation_builder_node: build the policy observation from odometry (380 or 387).
 
 Subscribes to ground-truth odometry and the latched track topics, reconstructs the
 exact training observation via obs_core, and publishes it at the control rate.
@@ -14,12 +14,12 @@ import torch
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile
 
-from geometry_msgs.msg import Point
 from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Float32MultiArray
-from visualization_msgs.msg import Marker, MarkerArray
+from visualization_msgs.msg import MarkerArray
 
 from f1tenth_rl_agent import interfaces as ifc
+from f1tenth_rl_agent import obs_debug_viz
 from f1tenth_rl_agent.obs_core import ObservationBuilder, quat_xyzw_to_wxyz
 
 
@@ -41,6 +41,9 @@ class ObservationBuilderNode(Node):
         self.declare_parameter("future_track_width", ifc.FUTURE_TRACK_WIDTH)
         self.declare_parameter("twist_in_world_frame", False)
         self.declare_parameter("publish_debug_markers", True)
+        self.declare_parameter("enable_opponent_obs", False)
+        self.declare_parameter("zero_opponent_obs", False)
+        self.declare_parameter("opponent_odom_topic", ifc.TOPIC_OPP_ODOM)
 
         gp = self.get_parameter
         self.control_hz = gp("control_hz").get_parameter_value().double_value
@@ -50,19 +53,26 @@ class ObservationBuilderNode(Node):
         self.publish_markers = (
             gp("publish_debug_markers").get_parameter_value().bool_value
         )
-        self.obs_cfg = {
-            "num_obs": ifc.NUM_OBS,
-            "contact_margin_m": gp("contact_margin_m").get_parameter_value().double_value,
-            "future_track_num_points": gp("future_track_num_points")
-            .get_parameter_value()
-            .integer_value,
-            "future_track_horizon_s": gp("future_track_horizon_s")
-            .get_parameter_value()
-            .double_value,
-            "future_track_width": gp("future_track_width")
-            .get_parameter_value()
-            .double_value,
-        }
+        self.enable_opponent = (
+            gp("enable_opponent_obs").get_parameter_value().bool_value
+        )
+        self.zero_opponent = (
+            gp("zero_opponent_obs").get_parameter_value().bool_value
+        )
+        self.obs_cfg = ifc.default_obs_cfg(self.enable_opponent)
+        self.obs_cfg["zero_opponent_obs"] = self.zero_opponent
+        self.obs_cfg["contact_margin_m"] = (
+            gp("contact_margin_m").get_parameter_value().double_value
+        )
+        self.obs_cfg["future_track_num_points"] = (
+            gp("future_track_num_points").get_parameter_value().integer_value
+        )
+        self.obs_cfg["future_track_horizon_s"] = (
+            gp("future_track_horizon_s").get_parameter_value().double_value
+        )
+        self.obs_cfg["future_track_width"] = (
+            gp("future_track_width").get_parameter_value().double_value
+        )
 
         self.builder: ObservationBuilder | None = None
         self._centerline = None
@@ -70,6 +80,7 @@ class ObservationBuilderNode(Node):
         self._w_right = None
 
         self._last_odom: Odometry | None = None
+        self._last_opp_odom: Odometry | None = None
         self._prev_body_vel: np.ndarray | None = None
         self._prev_vel_stamp: float | None = None
         self._body_accel = np.zeros(2, dtype=np.float32)
@@ -80,7 +91,10 @@ class ObservationBuilderNode(Node):
         self.create_subscription(
             Float32MultiArray, ifc.TOPIC_TRACK_WIDTHS, self._on_widths, latched
         )
+        opp_topic = gp("opponent_odom_topic").get_parameter_value().string_value
         self.create_subscription(Odometry, ifc.TOPIC_ODOM, self._on_odom, 10)
+        if self.enable_opponent and not self.zero_opponent:
+            self.create_subscription(Odometry, opp_topic, self._on_opp_odom, 10)
         self.create_subscription(Float32MultiArray, ifc.TOPIC_ACTION, self._on_action, 10)
 
         self.obs_pub = self.create_publisher(Float32MultiArray, ifc.TOPIC_OBSERVATION, 10)
@@ -125,7 +139,8 @@ class ObservationBuilderNode(Node):
             device=torch.device("cpu"),
         )
         self.get_logger().info(
-            f"ObservationBuilder initialized with {len(self._centerline)} points"
+            f"ObservationBuilder initialized with {len(self._centerline)} points; "
+            f"num_obs={self.obs_cfg['num_obs']}"
         )
 
     def _on_action(self, msg: Float32MultiArray):
@@ -134,6 +149,9 @@ class ObservationBuilderNode(Node):
 
     def _on_odom(self, msg: Odometry):
         self._last_odom = msg
+
+    def _on_opp_odom(self, msg: Odometry):
+        self._last_opp_odom = msg
 
     # --- main loop -------------------------------------------------------------
     @staticmethod
@@ -185,6 +203,39 @@ class ObservationBuilderNode(Node):
         last_actions = torch.tensor([self._last_action], dtype=torch.float32)
         base_pos = torch.tensor([[pos.x, pos.y, pos.z]], dtype=torch.float32)
 
+        opponent_block = None
+        if self.enable_opponent:
+            if self.zero_opponent or self._last_opp_odom is None:
+                opponent_block = base_lin_vel.new_zeros((1, ifc.OPPONENT_OBS_DIM))
+            else:
+                opp = self._last_opp_odom
+                opp_pos = opp.pose.pose.position
+                oq = opp.pose.pose.orientation
+                opp_yaw = float(
+                    math.atan2(
+                        2.0 * (oq.w * oq.z + oq.x * oq.y),
+                        1.0 - 2.0 * (oq.y * oq.y + oq.z * oq.z),
+                    )
+                )
+                ego_vel_world = torch.tensor(
+                    [[msg.twist.twist.linear.x, msg.twist.twist.linear.y]],
+                    dtype=torch.float32,
+                )
+                opp_vel_world = torch.tensor(
+                    [[opp.twist.twist.linear.x, opp.twist.twist.linear.y]],
+                    dtype=torch.float32,
+                )
+                ego_yaw_t = torch.tensor([yaw], dtype=torch.float32)
+                opp_pos_t = torch.tensor([[opp_pos.x, opp_pos.y, opp_pos.z]], dtype=torch.float32)
+                opponent_block = self.builder.build_opponent_block(
+                    ego_pos=base_pos,
+                    ego_yaw=ego_yaw_t,
+                    ego_vel_world=ego_vel_world,
+                    opp_pos=opp_pos_t,
+                    opp_vel_world=opp_vel_world,
+                    present=torch.tensor([1.0], dtype=torch.float32),
+                )
+
         obs = self.builder.build(
             base_lin_vel=base_lin_vel,
             base_ang_vel=base_ang_vel,
@@ -192,6 +243,7 @@ class ObservationBuilderNode(Node):
             last_actions=last_actions,
             base_pos=base_pos,
             base_quat_wxyz=quat_wxyz,
+            opponent_block=opponent_block,
         )
         obs_np = obs.squeeze(0).numpy().astype(np.float32)
 
@@ -203,31 +255,12 @@ class ObservationBuilderNode(Node):
             self._publish_future_markers(obs_np, float(pos.x), float(pos.y), yaw)
 
     def _publish_future_markers(self, obs_np, px, py, yaw):
-        future = obs_np[ifc.OBS_FUTURE_POINTS[0]:ifc.OBS_FUTURE_POINTS[1]]
         samples = self.obs_cfg["future_track_num_points"]
-        future = future.reshape(3, samples, 2)
-        c, s = math.cos(yaw), math.sin(yaw)
-
-        arr = MarkerArray()
-        colors = [(1.0, 1.0, 0.0, 1.0), (1.0, 0.2, 0.2, 1.0), (0.2, 0.4, 1.0, 1.0)]
+        future = obs_debug_viz.future_block(obs_np, samples)
         now = self.get_clock().now().to_msg()
-        for curve_idx in range(3):
-            m = Marker()
-            m.header.frame_id = ifc.FRAME_MAP
-            m.header.stamp = now
-            m.ns = "future_points"
-            m.id = curve_idx
-            m.type = Marker.LINE_STRIP
-            m.action = Marker.ADD
-            m.scale.x = 0.04
-            m.color.r, m.color.g, m.color.b, m.color.a = colors[curve_idx]
-            m.pose.orientation.w = 1.0
-            for k in range(samples):
-                xe, ye = float(future[curve_idx, k, 0]), float(future[curve_idx, k, 1])
-                wx = px + c * xe - s * ye
-                wy = py + s * xe + c * ye
-                m.points.append(Point(x=wx, y=wy, z=0.0))
-            arr.markers.append(m)
+        arr = obs_debug_viz.build_future_markers(
+            future, px, py, yaw, ifc.FRAME_MAP, now
+        )
         self.marker_pub.publish(arr)
 
 

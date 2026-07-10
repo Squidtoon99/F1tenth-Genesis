@@ -1,0 +1,10 @@
+# On-car 1v1 policy_inference params (387-dim + obs_norm).
+policy_inference:
+  ros__parameters:
+    checkpoint_path: "/home/shereef/checkpoints/ckpt_500000.pt"
+    state_dict_key: "actor"
+    device: "cpu"
+    deterministic: true
+    norm_clip: 10.0
+    norm_eps: 1.0e-8
+    enable_opponent_obs: true

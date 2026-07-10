@@ -1,0 +1,29 @@
+# Drop-in overrides for f1tenth_gym_ros config/sim.yaml — IV 2026 competition track.
+#
+# Source: https://github.com/RMin280/dfr_f1tenth_gym/tree/dev-humble
+#
+# Copy IV_2026_SIM.{png,yaml} and IV_2026_SIM_raceline.csv into the bridge maps/
+# directory (or use ros2_deploy/assets/ copies), merge these keys into config/sim.yaml,
+# then re-run colcon build in the sim container.
+bridge:
+  ros__parameters:
+    num_agent: 1
+
+    map_path: 'maps/IV_2026_SIM'
+    map_img_ext: '.png'
+
+    vehicle_params: 'f1tenth'
+    scale: 1.0
+
+    # Matches dfr_f1tenth_gym dev-humble config/sim.yaml ego start pose.
+    sx: 0.0
+    sy: 2.0
+    stheta: -0.9
+
+    use_sim_time: False
+    async_mode: True
+
+foxglove:
+  ros__parameters:
+    open_foxglove: True
+    target: 'browser'

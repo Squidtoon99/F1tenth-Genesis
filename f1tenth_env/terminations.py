@@ -75,6 +75,31 @@ def invalid_state_mask(
     return (~finite_ok) | heading_bad
 
 
+def collision_mask(
+    ego_pos_xy: torch.Tensor,
+    opp_pos_xy: torch.Tensor,
+    ego_yaw: torch.Tensor,
+    car_length: float,
+    car_width: float,
+    collision_margin_m: float = 0.0,
+) -> torch.Tensor:
+    """1v1 collision predicate: axis-aligned boxes in the ego heading frame.
+
+    Both cars are treated as rectangles aligned with the ego heading (cheap
+    interim, not full OBB-OBB).  Collision when longitudinal and lateral
+    separations are both below their respective half-extent sums plus margin.
+    """
+    dp = opp_pos_xy - ego_pos_xy
+    cos_yaw = torch.cos(ego_yaw)
+    sin_yaw = torch.sin(ego_yaw)
+    d_long = dp[:, 0] * cos_yaw + dp[:, 1] * sin_yaw
+    d_lat = -dp[:, 0] * sin_yaw + dp[:, 1] * cos_yaw
+
+    long_thresh = float(car_length) + float(collision_margin_m)
+    lat_thresh = float(car_width) + float(collision_margin_m)
+    return (torch.abs(d_long) < long_thresh) & (torch.abs(d_lat) < lat_thresh)
+
+
 def compute_terminations(
     step_state: dict[str, Any],
     episode_steps_buf: torch.Tensor,

@@ -6,9 +6,61 @@ progress / lateral-error / speed samples so it can be unit-tested deterministica
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
+import numpy as np
 
+
+def sample_centerline_pose(
+    centerline: np.ndarray,
+    rng: np.random.Generator,
+) -> tuple[float, float, float]:
+    """Pick a random on-track pose aligned with the local centerline tangent."""
+    if len(centerline) < 2:
+        raise ValueError("centerline must have at least two points")
+    idx = int(rng.integers(0, len(centerline)))
+    x, y = float(centerline[idx, 0]), float(centerline[idx, 1])
+    next_idx = (idx + 1) % len(centerline)
+    dx = float(centerline[next_idx, 0] - centerline[idx, 0])
+    dy = float(centerline[next_idx, 1] - centerline[idx, 1])
+    if math.hypot(dx, dy) < 1e-6:
+        prev_idx = (idx - 1) % len(centerline)
+        dx = float(centerline[idx, 0] - centerline[prev_idx, 0])
+        dy = float(centerline[idx, 1] - centerline[prev_idx, 1])
+    yaw = math.atan2(dy, dx)
+    return x, y, yaw
+
+
+
+
+def opponent_pose_ahead(
+    centerline: np.ndarray,
+    ego_x: float,
+    ego_y: float,
+    gap_m: float = 7.0,
+) -> tuple[float, float, float]:
+    """Place the opponent ``gap_m`` arc-length ahead on the closed centerline (training parity)."""
+    if len(centerline) < 2:
+        raise ValueError("centerline must have at least two points")
+    cl = np.asarray(centerline, dtype=np.float64)
+    seg = cl[1:] - cl[:-1]
+    seg_len = np.linalg.norm(seg, axis=1)
+    mean_seg = float(np.mean(seg_len)) if seg_len.size else 1.0
+    gap_pts = max(1, int(round(float(gap_m) / max(mean_seg, 1e-6))))
+    d2 = (cl[:, 0] - ego_x) ** 2 + (cl[:, 1] - ego_y) ** 2
+    ego_idx = int(np.argmin(d2))
+    opp_idx = (ego_idx + gap_pts) % len(cl)
+    ox, oy = float(cl[opp_idx, 0]), float(cl[opp_idx, 1])
+    next_idx = (opp_idx + 1) % len(cl)
+    dx = float(cl[next_idx, 0] - cl[opp_idx, 0])
+    dy = float(cl[next_idx, 1] - cl[opp_idx, 1])
+    if math.hypot(dx, dy) < 1e-6:
+        prev_idx = (opp_idx - 1) % len(cl)
+        dx = float(cl[opp_idx, 0] - cl[prev_idx, 0])
+        dy = float(cl[opp_idx, 1] - cl[prev_idx, 1])
+    yaw = math.atan2(dy, dx)
+    return ox, oy, yaw
 @dataclass
 class EpisodeEvent:
     progress_ratio: float

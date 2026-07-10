@@ -1,3 +1,6 @@
+# macOS
+.DS_Store
+
 .env
 .env.production
 f1tenth_labs
@@ -11,6 +14,9 @@ outputs
 # model checkpoints / track dumps
 .pickle
 tracks.pickle
+
+# raw rosbag captures (binary, large)
+bags/
 
 # Cmake build files
 CmakeFiles
@@ -30,3 +36,9 @@ scripts/logs
 .err
 
 .ipynb
+venv/
+.testvenv/
+.verifyvenv/
+
+# calibration run artifacts (CSVs, bags, plots, fitted params)
+vehicle_calibration/runs/

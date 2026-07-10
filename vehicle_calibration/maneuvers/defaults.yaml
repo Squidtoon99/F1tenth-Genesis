@@ -1,0 +1,39 @@
+# Calibration settings: speed gating, fit objective weights, and the Genesis
+# parameter search space. v_fit_min is the hard floor below which IRL data is
+# treated as actuator "crunching" and excluded from the fit objective.
+
+v_fit_min: 2.5
+
+# Per-metric-type relative-error weights in the fit objective. Cornering and
+# mid-band acceleration are the racing-relevant behaviors, so they dominate.
+fit_weights:
+  corner: 2.0
+  accel: 1.5
+  brake: 1.0
+  steer_step: 1.0
+  coast: 0.0  # diagnostic only
+
+# Genesis config.py["env"] keys the fitter is allowed to vary, with bounds.
+# c_roll, stiction, and any speed-tracking wrapper are deliberately NOT here:
+# they would only be needed to reproduce low-speed behavior we are excluding.
+fit_params:
+  f_drive_max:   {init: 23.0,  min: 8.0,  max: 40.0}
+  dragcoeff:     {init: 0.075, min: 0.01, max: 0.30}
+  power_max:     {init: 255.0, min: 80.0, max: 500.0}
+  f_brake_max:   {init: 23.0,  min: 8.0,  max: 40.0}
+  tire_friction: {init: 0.65,  min: 0.40, max: 1.10}
+  t_delta:       {init: 0.10,  min: 0.02, max: 0.40}
+
+# Maneuver subset used during the (expensive) fit search; full suite is replayed
+# for the final validation pass.
+fit_maneuvers:
+  - L1_accel
+  - L2_brake
+  - S1_corner_050
+  - S1_corner_100
+  - S2_steer_step
+  - S3_corner_t10
+
+# Speed floor (m/s) for the policy-lap comparison: only lap segments at or above
+# this speed are scored, mirroring the high-speed-first calibration intent.
+lap_v_gate: 3.0

@@ -5,6 +5,7 @@ import math
 import pytest
 
 rclpy = pytest.importorskip("rclpy")
+from rclpy.parameter import Parameter  # noqa: E402
 
 from ackermann_msgs.msg import AckermannDriveStamped  # noqa: E402
 from std_msgs.msg import Float32MultiArray  # noqa: E402
@@ -38,6 +39,10 @@ def test_drive_command_maps_action():
     node = None
     try:
         node = DriveCommandNode()
+        node.set_parameters([
+            Parameter("enable_output_filter", Parameter.Type.BOOL, False),
+            Parameter("speed_limit_mps", Parameter.Type.DOUBLE, 15.0),
+        ])
         received = _collect_drive(node, None, [1.0, 0.0])
         assert received
         assert math.isclose(received[-1].drive.speed, ifc.MAX_SPEED, rel_tol=1e-4)

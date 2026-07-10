@@ -80,12 +80,29 @@ def load_tracks(force=False) -> None:
 load_tracks()
 
 
+def bundled_track_csv(workspace_dir: str, track_name: str) -> str | None:
+    """Return a bundled centerline CSV path, if present under ros2_deploy/assets."""
+    for root in (
+        os.path.join(workspace_dir, "ros2_deploy", "f1tenth_rl_agent", "assets"),
+        os.path.join(workspace_dir, "ros2_deploy", "assets"),
+    ):
+        path = os.path.join(root, f"{track_name}_centerline.csv")
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def resolve_track_data(configured: str | None, workspace_dir: str) -> np.ndarray:
     if configured is not None:
         if not configured.endswith(".csv"):
-            # Check if its one of the tracks from f1tenth racetracks
-            if (track := TRACKS.get(configured)) is not None:
+            if (local := bundled_track_csv(workspace_dir, configured)) is not None:
+                configured = local
+            elif (track := TRACKS.get(configured)) is not None:
                 return track
+        if not os.path.isabs(configured):
+            rel = os.path.join(workspace_dir, configured)
+            if os.path.exists(rel):
+                configured = rel
         if not os.path.exists(configured):
             raise FileNotFoundError(f"track does not exist: {configured}")
         return np.genfromtxt(configured, delimiter=",", names=True, dtype=np.float32)
@@ -143,6 +160,41 @@ def load_track_state(
         "track_geom_cache": {},
         "frenet_step_cache": {},
     }
+
+
+def track_loop_length(centerline: np.ndarray) -> float:
+    """Closed-loop centerline length in meters (matches ``build_track_cache`` 'L')."""
+    cl = np.asarray(centerline, dtype=np.float64)
+    if np.linalg.norm(cl[0] - cl[-1]) > 1e-6:
+        cl = np.concatenate([cl, cl[0:1]], axis=0)
+    seg = cl[1:] - cl[:-1]
+    return float(np.linalg.norm(seg, axis=-1).sum())
+
+
+def episode_length_for_track(
+    track: str | None,
+    workspace_dir: str,
+    ref_lap_speed_mps: float = 3.5,
+    lap_multiplier: float = 3.0,
+    min_s: float = 60.0,
+) -> float:
+    """Episode length (seconds) sized to ``lap_multiplier`` laps at a reference pace.
+
+    GT Sophy base scenarios ran for a fixed 150 s; here we derive a comparable
+    multi-lap horizon from the actual centerline length so each track gets enough
+    time for several laps plus overtakes instead of the previous single-lap 45 s.
+
+    Reads only the centerline CSV (no Genesis tensors), so it is safe to call
+    before ``gs.init()`` during config construction.
+    """
+    data = resolve_track_data(track, workspace_dir)
+    if data is None or data.dtype.names is None:
+        raise ValueError(f"Could not parse track csv data from {track}")
+    centerline = np.stack([data["x_m"], data["y_m"]], axis=-1).astype(np.float32)
+    length_m = track_loop_length(centerline)
+    return max(
+        float(min_s), (length_m / float(ref_lap_speed_mps)) * float(lap_multiplier)
+    )
 
 
 def compute_track_boundaries(
@@ -225,6 +277,55 @@ def build_track_cache(
     }
 
 
+def build_obs_track_cache(
+    track_state: dict[str, Any],
+    device: torch.device,
+) -> dict[str, Any]:
+    """Precompute (once) the open-polyline tensors used by future-track obs.
+
+    These are track invariants (centerline, segment vectors/lengths, cumulative
+    arclength); recomputing and re-uploading them every step is wasteful.
+    """
+    cache = track_state.get("obs_track_cache")
+    if cache is not None:
+        return cache
+
+    centerline_t = torch.as_tensor(
+        track_state["centerline"], device=device, dtype=gs.tc_float
+    )
+    seg = centerline_t[1:] - centerline_t[:-1]
+    seg_len = torch.linalg.vector_norm(seg, dim=-1)
+    cumlen = torch.cat(
+        [
+            torch.zeros(1, device=device, dtype=gs.tc_float),
+            torch.cumsum(seg_len, dim=0),
+        ],
+        dim=0,
+    )
+    w_tr_left = track_state.get("w_tr_left_torch")
+    if w_tr_left is None:
+        w_tr_left = torch.as_tensor(
+            track_state["w_tr_left"], device=device, dtype=gs.tc_float
+        )
+    w_tr_right = track_state.get("w_tr_right_torch")
+    if w_tr_right is None:
+        w_tr_right = torch.as_tensor(
+            track_state["w_tr_right"], device=device, dtype=gs.tc_float
+        )
+    cache = {
+        "centerline_t": centerline_t,
+        "seg": seg,
+        "seg_len": seg_len,
+        "cumlen": cumlen,
+        "total_len": cumlen[-1].clamp(min=1e-6),
+        "n": int(centerline_t.shape[0]),
+        "w_tr_left": w_tr_left,
+        "w_tr_right": w_tr_right,
+    }
+    track_state["obs_track_cache"] = cache
+    return cache
+
+
 def frenet_projection_cached(
     base_pos: torch.Tensor,
     episode_steps_buf: torch.Tensor,
@@ -243,13 +344,9 @@ def frenet_projection_cached(
         )
         track_state["track_geom_cache"][cache_id] = geom
 
-    step_key = episode_steps_buf.detach().clone()
-    step_entry = track_state["frenet_step_cache"].get(cache_id)
-    if step_entry is not None:
-        last_step = step_entry["step"]
-        if last_step.shape == step_key.shape and torch.equal(last_step, step_key):
-            return step_entry["data"]
-
+    # Within a step the env caches the full step_state (see ``_step_state_valid``)
+    # and clears it once per step, so an extra GPU-syncing equality check here
+    # would never hit; the projection is computed exactly once per step.
     pos = base_pos[:, :2].to(device=device, dtype=gs.tc_float)
     batch = pos.shape[0]
 
@@ -303,7 +400,6 @@ def frenet_projection_cached(
         "L": length,
     }
 
-    track_state["frenet_step_cache"][cache_id] = {"step": step_key, "data": data}
     return data
 
 
@@ -384,9 +480,11 @@ def build_step_state(
         track_state["w_tr_left_torch"],
         track_state["w_tr_right_torch"],
     )
+    obs_track = build_obs_track_cache(track_state, device)
     return {
         "frenet": frenet_state,
         "boundary": boundary_state,
+        "obs_track": obs_track,
     }
 
 
